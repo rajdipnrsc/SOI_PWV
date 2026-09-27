@@ -17,9 +17,14 @@ run-time behaviour.
 
 | Day | Arcs | Slip/reset causes | Eclipse exclusions (sat-epochs) | IONO_ACTIVE epochs | NIS/dof | Phase outliers split | 5-min values | CONVERGED |
 |---|---|---|---|---|---|---|---|---|
-| 2024-015 (Jan) | 75 | LLI 58, MW 43, GF 6, GAP 116 | 1097 | 0 | 20.9 | 130 | 288/288 | 91 % |
-| 2024-197 (Jul, monsoon) | 66 | LLI 59, MW 37, GF 9, GAP 64 | 1442 | 0 | 10.2 | 232 | 288/288 | 91 % |
-| 2024-229 (Aug) | 91 | LLI 54, MW 74, GF 193, GAP 74 | 453 | 82 | 8.7 | 254 | 288/288 | 80 % |
+| 2024-015 (Jan) | 75 | LLI 58, MW 43, GF 6, GAP 116 | 1097 | 0 | 0.86 | 718 | 288/288 | 31 % |
+| 2024-197 (Jul, monsoon) | 66 | LLI 59, MW 37, GF 9, GAP 64 | 1442 | 0 | 0.76 | 831 | 288/288 | 32 % |
+| 2024-229 (Aug) | 91 | LLI 54, MW 74, GF 193, GAP 74 | 453 | 82 | 0.77 | 714 | 288/288 | 32 % |
+
+With broadcast orbits/clocks the phase residuals are at the decimetre level, far above the 3-mm phase noise model,
+so IGG-III screening and residual editing down-weight/split many observations and the smoothed σ_ZTD often exceeds
+the 10-mm `CONVERGED` threshold. This is the expected behaviour for grossly wrong products (the solution reports its
+own weakness instead of hiding it); with CODE products the residuals should be at the mm–cm level.
 
 Observations useful for the real-data stages:
 * The HYDE Trimble Alloy tracks L2W intermittently (many LLI/GAP resets and short arcs); the stable per-satellite
