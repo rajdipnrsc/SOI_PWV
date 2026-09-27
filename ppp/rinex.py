@@ -298,10 +298,7 @@ def read_nav(path):
     txt = _read_text(path)
     lines = txt.splitlines()
     i = 0
-    version = 3.0
     while i < len(lines):
-        if "RINEX VERSION / TYPE" in lines[i]:
-            version = _f(lines[i][0:9])
         if "END OF HEADER" in lines[i]:
             break
         i += 1

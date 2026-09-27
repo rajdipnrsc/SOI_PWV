@@ -3,7 +3,6 @@
 Units: delays, gradients and PWV in mm; clock in ns; heights m; angles degrees (TDS § 17).
 """
 import json
-import os
 
 import numpy as np
 
@@ -162,7 +161,7 @@ def write_sinex_tro(path, station, fm, meta, xyz):
     lines = [f"%=TRO 2.00 {settings.SOFTWARE_NAME[:3].upper()} {ep(t1)} COD {ep(t0)} {ep(t1)} P "
              f"{len(fm.t_utc):05d} 0 T"]
     lines += ["+FILE/REFERENCE", f" DESCRIPTION        {settings.SOFTWARE_NAME} float PPP troposphere",
-              f" OUTPUT             Station ZTD, 5-min", f" SOFTWARE           {meta['software_version']}",
+              " OUTPUT             Station ZTD, 5-min", f" SOFTWARE           {meta['software_version']}",
               "-FILE/REFERENCE", "+TROP/DESCRIPTION",
               f" ELEVATION CUTOFF ANGLE     {meta['elevation_cutoff']:5.1f}",
               f" SAMPLING INTERVAL          {int(settings.PROCESSING_INTERVAL_S):5d}",
@@ -215,7 +214,6 @@ def quicklook(path, station, day_label, fm, pwv=None, title_extra=""):
         ax.tick_params(colors=muted, labelsize=8)
     ax = axes[-1]
     ax.set_facecolor(surface)
-    cats = ["CONVERGED", "NOT_CONVERGED", "EDGE", "REINIT", "NO_DATA"]
     shade = {"CONVERGED": "#c3c2b7", "NOT_CONVERGED": "#eda100", "EDGE": "#52514e", "REINIT": "#eb6834",
              "NO_DATA": "#ffffff"}
     for i, c in enumerate(fm.conv):

@@ -5,13 +5,12 @@ import http.server
 import os
 import threading
 
-import numpy as np
 import pytest
 
 from ppp import products as prd
 from ppp import settings
 from ppp import timesys as ts
-from tests.test_orbclk import EPH, truth
+from tests.test_orbclk import truth
 
 DAY = ts.to_ns(2024, 1, 15)
 

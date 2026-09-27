@@ -26,7 +26,6 @@ from ppp import coords as co
 from ppp import estimator as est
 from ppp import log as plog
 from ppp import model as mdl
-from ppp import orbclk
 from ppp import output as out
 from ppp import preprocess as pp
 from ppp import products as prd
@@ -237,8 +236,12 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                    "); rerun later", code=2)
     if ps.status == "FAIL":
         hint = ""
+        src_hosts = {u.split("/")[2] for u in settings.PRODUCT_SOURCES}
         if dl.dead_hosts:
             hint = " Unreachable hosts: " + ", ".join(dl.dead_hosts) + " (check network/proxy access)."
+        if src_hosts and src_hosts <= set(dl.dead_hosts):
+            raise Stop("FAIL", "PRODUCTS_UNREACHABLE: none of the CODE product sources could be contacted." + hint +
+                       " Products already in the cache would be used with --offline.")
         raise Stop("FAIL", ps.reason + ". Missing: " + ", ".join(ps.missing[:12]) + hint)
     warnings_flags |= set(ps.flags)
     # frame label

@@ -83,8 +83,7 @@ def test_sun_moon_meeus_examples():
 
 
 def test_sun_moon_ecef_geometry():
-    t = np.array([ts.to_ns(2024, 3, 20, 12, 0, 0)])                   # near equinox, local noon at lon 0
-    sun, moon = cr.sun_moon_ecef(t)
+    sun, moon = cr.sun_moon_ecef(np.array([ts.to_ns(2024, 3, 20, 12, 0, 0)]))   # near equinox, noon at lon 0
     s = sun[0] / np.linalg.norm(sun[0])
     assert abs(np.degrees(np.arcsin(s[2]))) < 0.5                     # declination ~ 0
     assert abs(np.degrees(np.arctan2(s[1], s[0]))) < 2.5              # sub-solar longitude ~ 0 (eq. of time)
@@ -125,7 +124,6 @@ def test_windup_vs_rtklib():
     worst = 0.0
     for a, b in zip(starts[:-1], starts[1:]):
         r = rows[a:b]
-        t = (r[:, 0] * 7 * 86400 + r[:, 1]).astype(np.int64) * ts.NS
         rs, rr = r[:, 2:5], r[:, 5:8]
         sun = r[:, 10:13]                           # RTKLIB's own Sun -> isolates the wind-up formula
         ex, ey, ez = cr.nominal_attitude(rs, sun)

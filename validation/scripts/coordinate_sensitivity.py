@@ -31,7 +31,6 @@ def main(argv=None):
     a = ap.parse_args(argv)
     X = np.array(a.xyz)
     lat, lon, _ = co.ecef_to_geodetic(X)
-    runs = {}
 
     def run(tag, d_enu):
         xyz = X + co.enu2xyz(np.array(d_enu), lat, lon)

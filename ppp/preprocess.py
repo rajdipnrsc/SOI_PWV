@@ -10,7 +10,6 @@ import numpy as np
 
 from . import log as plog
 from . import settings
-from . import timesys as ts
 
 LOG = plog.get()
 C = settings.C_LIGHT

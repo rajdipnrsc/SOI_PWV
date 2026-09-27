@@ -129,6 +129,7 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
     x = P = None
     consec = {}
     births = store["births"]
+    kprev = k0
     for k in range(k0, k1 + 1):
         m = obs.usable[k] & ~edit["removed"][k]
         arc_k = arcs.arc[k]

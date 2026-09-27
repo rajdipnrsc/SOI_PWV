@@ -3,7 +3,6 @@ import numpy as np
 import pytest
 
 from ppp import coords as co
-from ppp import settings
 from ppp import timesys as ts
 
 X_HYDE = np.array([1208298.991, 5967329.098, 1895460.127])     # SOI HYDE, ITRF2008 @ 2005.0 (sample data)

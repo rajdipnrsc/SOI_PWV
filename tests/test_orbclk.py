@@ -97,6 +97,8 @@ AS R01       2024 01 15 00 00  0.000000  1    1.0E-04
     e = orbclk.read_erp(str(erp))
     xp, yp, du = orbclk.erp_interp(e, 60325.0)
     assert xp == pytest.approx(0.041) and yp == pytest.approx(0.301) and du == pytest.approx(-0.01205)
+    erp.write_text(erp.read_text().replace("-120000", "-370120000").replace("-121000", "-370121000"))
+    assert orbclk.erp_interp(orbclk.read_erp(str(erp)), 60325.0)[2] == pytest.approx(-0.01205)   # UT1-TAI input
     bia = tmp_path / "b.bia"
     bia.write_text("""%=BIA 1.00 COD 2024:016:00000 COD 2024:015:00000 2024:016:00000 A 00000
 +BIAS/SOLUTION

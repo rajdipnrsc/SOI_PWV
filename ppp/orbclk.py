@@ -349,6 +349,8 @@ def read_erp(path):
         du.append(float(p[3]) * 1e-7)
     if not mj:
         raise ValueError(f"{path}: no ERP records")
+    # column 4 may hold UT1-TAI (about -37 s) instead of UT1-UTC (|x| < 0.9 s): convert with TAI-UTC
+    du = [d + ts.tai_minus_utc(m) if abs(d) > 1.0 else d for m, d in zip(mj, du)]
     o = np.argsort(mj)
     return ERP(np.array(mj)[o], np.array(xp)[o], np.array(yp)[o], np.array(du)[o], [os.path.basename(path)])
 

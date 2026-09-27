@@ -6,7 +6,6 @@ cache layout, manifest), § 33.6 (automatic downloads of ANTEX, VMF3, GPT3, leap
 Nothing here hard-codes a directory tree or filename: all templates live in settings.py (TDS § 36.5).
 """
 import datetime as _dt
-import gzip
 import hashlib
 import json
 import os
