@@ -57,3 +57,17 @@ labelled `PRODUCTS_OVERRIDE`/`TEST_BROADCAST` and are never products.
 **D-010 (2026-09-27) — National grid alignment.**
 The 0.25° national grid uses cell centres at multiples of 0.25° (ERA5-coincident, TDS § 27.1 option) so that the
 ERA5 background is sampled exactly at cell centres.
+
+**D-011 (2026-09-27) — Optional SNR-based weighting not implemented.**
+TDS § 5.4 lists SNR weighting as an option, off by default. Only the optional SNR *mask* (§ 13.9, `SNR_MASK`) is
+implemented; SNR weighting can be added in `estimator._sigma2` if Level-3 tests show a benefit.
+
+**D-012 (2026-09-27) — Output naming and immutability.**
+Files use the Revision-1.1 names of § 33.5 (`<ST>_<YYYYDDD>_ZTD.csv`, ...). To keep outputs immutable (§ 19.3), a
+re-run of the same station-day first moves all previous outputs to `superseded/<old manifest_id>/`; the new
+manifest records `supersedes`, the archived one `superseded_by`.
+
+**D-013 (2026-09-27) — Receiver clock for the reception time.**
+The a priori receiver clock used for t_rx = epoch − dt_r comes from a code single-point solution and is then refined
+per epoch from the code residual median (≤ 3 iterations, until the change is < 1 µs), so that receivers with
+millisecond clock jumps or free-running clocks get correct reception times (TDS § 7.1).

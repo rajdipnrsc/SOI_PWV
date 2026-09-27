@@ -209,6 +209,8 @@ ROTI_WINDOW_S = 300.0
 CLOCK_JUMP_FRACTION = 0.8            # of satellites [A, TDS § 13.8]
 CLOCK_JUMP_TOL_MS = 1e-4             # |k - round(k)| tolerance (ms) for integer-ms jump
 SNR_MASK = False
+SATELLITE_BLACKLIST = []             # e.g. ["G04"]; excluded with a logged reason [TDS § 13.5]
+USE_BROADCAST_HEALTH = True          # exclude epochs where the broadcast ephemeris flags the satellite unhealthy
 SNR_MIN = {"1": 30.0, "2": 25.0}     # dB-Hz [A]
 
 # Attitude / eclipse [TDS § 7.11]. Block-specific noon-turn limits derived from maximum hardware yaw

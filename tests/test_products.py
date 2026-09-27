@@ -158,3 +158,15 @@ def test_manifest_supersession(tmp_path):
     assert old == [m_old["manifest_id"]]
     h, snap = prd.config_hash()
     assert len(h) == 64 and snap["PRODUCT_FAMILIES"] == settings.PRODUCT_FAMILIES
+
+
+def test_outputs_archived_not_overwritten(tmp_path):
+    import json
+
+    import pwv_ppp
+    (tmp_path / "HYDE_2024015_ZTD.csv").write_text("old")
+    (tmp_path / "HYDE_2024015_manifest.json").write_text(json.dumps({"manifest_id": "abc"}))
+    mid = pwv_ppp._archive_previous_outputs(str(tmp_path), "HYDE_2024015")
+    assert mid == "abc"
+    assert (tmp_path / "superseded" / "abc" / "HYDE_2024015_ZTD.csv").read_text() == "old"
+    assert not (tmp_path / "HYDE_2024015_ZTD.csv").exists()

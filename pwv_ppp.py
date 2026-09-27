@@ -385,13 +385,35 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                     "format) and save it as blq/%s.blq", blq_path, station)
         warnings_flags.add("NO_OTL")
 
+    # ---------------------------------------------------------------- satellite exclusion (§ 13.5)
+    excl_mask = np.zeros((len(epochs), len(sel_c.sats)), dtype=bool)
+    for j, prn in enumerate(sel_c.sats):
+        if prn in settings.SATELLITE_BLACKLIST:
+            excl_mask[:, j] = True
+            LOG.info("Satellite %s excluded: configured blacklist", prn)
+        elif settings.USE_BROADCAST_HEALTH and nav is not None and prn in nav:
+            bad = [e for e in nav[prn] if e.health != 0]
+            for e in bad:
+                m_ = np.abs(epochs - e.toe) <= 2 * 3600 * ts.NS
+                if m_.any():
+                    excl_mask[m_, j] = True
+            if bad:
+                LOG.info("Satellite %s: %d epochs excluded (broadcast health flag unhealthy)", prn,
+                         int(excl_mask[:, j].sum()))
+
     # ---------------------------------------------------------------- common preprocessing
     ctx = dict(epochs=epochs, sel=sel_c, Pif=Pif, Lif=Lif, ps=ps, atx=atx, rcv_ant=rcv_ant, tropo=tropo, blq=blq,
                rclk=rclk_spp, cutoff=np.radians(args.cutoff), a1=a1, a2=a2)
     LOG.info("Modelling observations at the a priori ARP (%s)", "SOI transformed" if coord_soi else "SPP")
     obs0, m0 = build_obsset(ctx, X_ap)
     t_s = (epochs - epochs[0]) / ts.NS
-    arcs = pp.detect_slips_and_arcs(sel_c, t_s, m0.el, m0.valid, ctx["cutoff"])
+    arcs = pp.detect_slips_and_arcs(sel_c, t_s, m0.el, m0.valid & ~excl_mask, ctx["cutoff"])
+    for (kj, _ms, repaired) in clk_jumps:
+        if not repaired:                                  # unrepaired receiver clock jump -> all arcs reset (§ 5.7)
+            for j in range(len(sel_c.sats)):
+                a = arcs.arc[kj, j]
+                if a >= 0 and arcs.arc_meta.get(int(a), {}).get("first", kj) < kj:
+                    pp.split_arc(arcs, j, kj, "CLOCK_JUMP")
     obs0.usable &= arcs.arc >= 0
     LOG.info("Preprocessing: %d arcs; resets %s; excluded %s; IONO_ACTIVE epochs %d", arcs.n_arcs,
              {k: v for k, v in arcs.reasons.items() if v}, {k: v for k, v in m0.excluded.items() if v},
@@ -503,6 +525,7 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
             "software_version": man["software_version"], "solution_type": "FLOAT", "zhd_source": tropo.zhd_source,
             "manifest_id": man["manifest_id"], "config_hash": chash, "elevation_cutoff": args.cutoff,
             "AR_status": "AR_NOT_AVAILABLE" if not args.ar else "FLOAT", "frame": ps.frame_label}
+    prev_mid = _archive_previous_outputs(args.out, tag)  # outputs are immutable (TDS § 19.3)
     rows = out.ztd_rows(fm, meta)
     ztd_csv = os.path.join(args.out, tag + "_ZTD.csv")
     out.write_csv(ztd_csv, rows, out.ZTD_COLUMNS, f"{settings.SOFTWARE_NAME} station ZTD product, float PPP, "
@@ -591,11 +614,19 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                        "cholesky_failures": sol.chol_failures, "convergence_time_s": conv_t,
                        "sigma_zwd_m_sqrt_h": settings.SIGMA_ZWD_M_SQRT_H, "attitude": final["model"].attitude_source},
         "warnings": warns, "outputs": [os.path.basename(p) for p in written],
-        "statement": out.STATEMENT, "download_attempts": len(dl.attempts), **manifest_extra,
+        "statement": out.STATEMENT, "download_attempts": dl.attempts[-500:], **manifest_extra,
     })
-    old = prd.find_superseded(args.out, station, man["day"], ps.tier, man["manifest_id"])
-    if old:
-        man["supersedes"] = old
+    if prev_mid:
+        man["supersedes"] = [prev_mid]
+        old_m = os.path.join(args.out, "superseded", prev_mid, tag + "_manifest.json")
+        try:
+            import json as _j
+            with open(old_m) as fh:
+                om = _j.load(fh)
+            om["superseded_by"] = man["manifest_id"]
+            prd.write_json(old_m, om)
+        except (OSError, ValueError):
+            pass
     cfg_dir = os.path.join(args.out, "provenance", "configs")
     os.makedirs(cfg_dir, exist_ok=True)
     prd.write_json(os.path.join(cfg_dir, chash + ".json"), csnap)
@@ -614,6 +645,27 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
              ",".join(sorted(warnings_flags)) or "none", time.time() - t_start)
     return {"fm": fm, "sol": sol, "obs": obs_f, "pwv": pw_res, "manifest": man, "coord": coord_final,
             "mode": final_mode, "files": written, "passA": passA}
+
+
+def _archive_previous_outputs(out_dir, tag):
+    """Move outputs of a previous run of the same station-day to superseded/<manifest_id>/ (never overwrite)."""
+    import json
+    import shutil
+    mpath = os.path.join(out_dir, tag + "_manifest.json")
+    if not os.path.exists(mpath):
+        return None
+    try:
+        with open(mpath) as fh:
+            mid = json.load(fh).get("manifest_id", "unknown")
+    except (OSError, ValueError):
+        mid = "unknown"
+    dest = os.path.join(out_dir, "superseded", mid)
+    os.makedirs(dest, exist_ok=True)
+    for f in glob.glob(os.path.join(out_dir, tag + "*")):
+        if os.path.isfile(f) and not f.endswith(".log"):
+            shutil.move(f, os.path.join(dest, os.path.basename(f)))
+    LOG.info("Previous outputs of %s moved to %s (superseded)", tag, dest)
+    return mid
 
 
 def _json(v):
@@ -639,18 +691,30 @@ def build_obsset(ctx, X0):
     epochs = ctx["epochs"]
     ps = ctx["ps"]
     disp, _parts = mdl.station_displacements(X0, epochs, ps.erp, ctx["blq"])
-    m = mdl.compute(epochs, ctx["sel"].sats, X0, ctx["rclk"], ps, ctx["atx"], ctx["rcv_ant"], disp)
     tro = ctx["tropo"]
     zhd0, zwd0, _, _ = tro.at(epochs)
-    ne, ns = m.el.shape
-    mh = np.full((ne, ns), np.nan)
-    mw = np.full((ne, ns), np.nan)
-    mg = np.full((ne, ns), np.nan)
-    ok = m.valid & np.isfinite(m.el) & (m.el > np.radians(1.0))
-    if ok.any():
-        tt = np.broadcast_to(epochs[:, None], (ne, ns))[ok]
-        h_, w_, g_ = tro.mapping(tt, m.el[ok])
-        mh[ok], mw[ok], mg[ok] = h_, w_, g_
+    for it in range(3):
+        m = mdl.compute(epochs, ctx["sel"].sats, X0, ctx["rclk"], ps, ctx["atx"], ctx["rcv_ant"], disp)
+        ne, ns = m.el.shape
+        mh = np.full((ne, ns), np.nan)
+        mw = np.full((ne, ns), np.nan)
+        mg = np.full((ne, ns), np.nan)
+        ok = m.valid & np.isfinite(m.el) & (m.el > np.radians(1.0))
+        if ok.any():
+            tt = np.broadcast_to(epochs[:, None], (ne, ns))[ok]
+            h_, w_, g_ = tro.mapping(tt, m.el[ok])
+            mh[ok], mw[ok], mg[ok] = h_, w_, g_
+        # per-epoch code-derived receiver clock for the reception time (TDS § 7.1): refine until < 1 us
+        use = ok & np.isfinite(ctx["Pif"]) & (np.nan_to_num(m.el, nan=-1) >= ctx["cutoff"])
+        slant = mh * zhd0[:, None] + mw * zwd0[:, None]
+        cclk = mdl.receiver_clock_from_code(ctx["Pif"], m.rho, m.dts, slant, use) / settings.C_LIGHT
+        good = np.isfinite(cclk)
+        new = np.where(good, cclk, ctx["rclk"])
+        change = np.nanmax(np.abs(new - ctx["rclk"])) if good.any() else 0.0
+        ctx["rclk"] = new
+        if change < 1e-6:
+            break
+        LOG.debug("receiver clock refined (max change %.3g s); re-modelling", change)
     lam_nl = C_NL()
     usable = m.valid & np.isfinite(ctx["Pif"]) & np.isfinite(ctx["Lif"]) & np.isfinite(mh) & \
         (np.nan_to_num(m.el, nan=-1) >= ctx["cutoff"])
