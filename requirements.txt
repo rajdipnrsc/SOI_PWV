@@ -1,0 +1,10 @@
+# Python >= 3.10 only (TDS § 33.1). Required:
+numpy>=1.24
+scipy>=1.10
+pandas>=1.5
+requests>=2.28
+netCDF4>=1.6
+matplotlib>=3.6
+hatanaka>=2.4
+# Optional: pytest (tests), numba (speed, only if profiling shows need), cdsapi (ERA5, System 2 only), PyYAML (settings override)
+pytest>=7
