@@ -65,7 +65,8 @@ observations.*
 python pwv_map.py results --day 2024-197 --era5 era5_pl_2024197.nc --dem dem_india.nc --grid G025 --cv
 ```
 ERA5/NWP background at station and cell height + GNSS residual regression kriging, σ and confidence classes, CF NetCDF
-`INPWV_{GRID}_{STEP}_{YYYYDDD}_{TIER}_v1.0.nc`. Without `--era5` the benchmark height-normalised method is used and
+`INPWV_{GRID}_{STEP}_{YYYYDDD}_{TIER}_v1.0.nc`. Without `--era5`, ERA5 is downloaded automatically if `cdsapi` is
+installed and a Copernicus key is in `~/.cdsapirc`; otherwise the benchmark height-normalised method is used and
 labelled `HEIGHT_SCALING_ONLY`. Resolution/accuracy claims require the § 31 experiment.
 
 ## Layout

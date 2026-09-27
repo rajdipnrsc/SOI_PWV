@@ -168,6 +168,43 @@ def read_era5(path):
     return Background(t_ns, lat, lon, p[o], z[:, o], T[:, o], q[:, o], zs, lsm, "ERA5")
 
 
+ERA5_LEVELS = [1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300,
+               250, 225, 200, 175, 150, 125, 100, 70, 50]
+
+
+def download_era5(day_ns, path, area=None):
+    """Download ERA5 pressure-level z/t/q (+ surface geopotential and land-sea mask) for one UTC day (+1 h)
+    with the Copernicus CDS API. Needs `cdsapi` and a key in ~/.cdsapirc (TDS § 33.6, optional).
+    VERIFY V-031: dataset/variable names follow the CDS catalogue at implementation time."""
+    import cdsapi
+    import netCDF4
+    la0, la1, lo0, lo1 = area or settings.MAP_DOMAIN
+    y, m, d, *_ = ts.from_ns(day_ns)
+    c = cdsapi.Client(quiet=True)
+    base = {"product_type": ["reanalysis"], "year": [f"{y:04d}"], "month": [f"{m:02d}"], "day": [f"{d:02d}"],
+            "time": [f"{h:02d}:00" for h in range(24)], "area": [la1 + 0.5, lo0 - 0.5, la0 - 0.5, lo1 + 0.5],
+            "data_format": "netcdf"}
+    pl = path + ".pl.nc"
+    sl = path + ".sl.nc"
+    c.retrieve("reanalysis-era5-pressure-levels", dict(base, variable=["geopotential", "temperature",
+                                                                      "specific_humidity"],
+                                                      pressure_level=[str(v) for v in ERA5_LEVELS]), pl)
+    c.retrieve("reanalysis-era5-single-levels", dict(base, variable=["geopotential", "land_sea_mask"],
+                                                     time=["00:00"]), sl)
+    # merge surface geopotential and lsm into the pressure-level file
+    with netCDF4.Dataset(sl) as s_, netCDF4.Dataset(pl, "a") as p_:
+        zs = np.array(s_["z"][:])
+        zs = zs[0] if zs.ndim == 3 else zs
+        v = p_.createVariable("z_surface", "f4", ("latitude", "longitude"))
+        v[:] = zs
+        w = p_.createVariable("lsm", "f4", ("latitude", "longitude"))
+        ls = np.array(s_["lsm"][:])
+        w[:] = ls[0] if ls.ndim == 3 else ls
+    os.replace(pl, path)
+    os.remove(sl)
+    return path
+
+
 def column_quantities(z, T, q, p_hpa, H):
     """Vectorised column integrals at height H for profiles (..., nl) ordered surface -> top.
 

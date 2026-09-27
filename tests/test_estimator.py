@@ -64,3 +64,16 @@ def test_outlier_screening_and_gap_segments():
     obs2.usable[1200:1400] = False                           # > window_break_s (3600 s) -> 2 segments
     sol2 = est.solve(obs2, copy.deepcopy(arcs2), est.EstConfig(mode="fixed"), max_passes=0)
     assert len(sol2.segments) == 2
+
+
+def test_forward_screening_rejects_phase_outlier():
+    obs, arcs, truth = synth.make_obs(seed=17)
+    k = 1500
+    # a satellite whose ambiguity is mature (arc started > 1 h earlier); for a newborn ambiguity an outlier is
+    # indistinguishable from the ambiguity itself
+    j = next(jj for jj in np.nonzero(obs.usable[k])[0] if arcs.arc_meta[int(arcs.arc[k, jj])]["first"] < k - 120
+             and obs.el[k, jj] > np.radians(30))
+    obs.Lif[k, j] += 0.30
+    sol = est.solve(obs, copy.deepcopy(arcs), est.EstConfig(mode="fixed"), max_passes=0)
+    assert sol.rejected[k, j]                                # caught by IGG-III in the forward pass
+    assert sol.rejected.sum() < 0.002 * obs.usable.sum()      # and almost nothing else

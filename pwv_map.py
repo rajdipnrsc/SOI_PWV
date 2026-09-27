@@ -56,6 +56,19 @@ def main(argv=None):
     tiers = sorted({s.tier for s in stations})
     tier = "FINAL" if tiers == ["FINAL"] else "RAPID"
     bg = None
+    if not a.era5 and os.path.exists(os.path.expanduser("~/.cdsapirc")):
+        try:
+            import importlib.util
+            if importlib.util.find_spec("cdsapi") is None:
+                raise ImportError("cdsapi not installed (pip install cdsapi)")
+            cand = os.path.join(settings.CACHE_DIR, "ERA5", f"era5_pl_{tag}.nc")
+            os.makedirs(os.path.dirname(cand), exist_ok=True)
+            if not os.path.exists(cand):
+                LOG.info("Downloading ERA5 background for %s (Copernicus CDS)", a.day)
+                mp.download_era5(day, cand)
+            a.era5 = cand
+        except Exception as exc:              # noqa: BLE001 - optional source; fall back and say so
+            LOG.warning("ERA5_UNAVAILABLE: %s", exc)
     if a.era5:
         bg = mp.read_era5(a.era5)
         LOG.info("Background: %s, %d times, %d levels", a.era5, len(bg.t_utc), len(bg.p_hpa))

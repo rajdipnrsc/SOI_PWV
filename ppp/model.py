@@ -135,10 +135,20 @@ def compute(epochs, sats, X0, rclk_s, prod, atx, rcv_ant, disp, att_convention_c
             if att_convention_check and not conv_checked:
                 _check_att_convention(prod.att, sat, t_tx, ex, ey, ez, good)
                 conv_checked = True
+            exn = ex.copy()
+            got = np.zeros(ne, dtype=bool)
             for k in np.nonzero(good)[0]:
                 axes = orbclk.att_axes(prod.att, sat, int(t_tx[k]))
                 if axes is not None:
                     ex[k], ey[k], ez[k] = axes
+                    got[k] = True
+            # body-frame convention check (IGS vs manufacturer frame): outside eclipse ORBEX x must agree with
+            # the nominal (IGS) x-axis; a systematic 180-deg yaw offset is removed (logged)
+            beta, _mu = cr.beta_and_mu(pos, vel, sun)
+            chk = got & (np.abs(beta) > np.radians(15.0))
+            if chk.sum() > 10 and np.median(np.sum(ex[chk] * exn[chk], axis=1)) < -0.5:
+                ex[got], ey[got] = -ex[got], -ey[got]
+                LOG.info("ORBEX %s: x/y axes rotated by 180 deg to the IGS body-frame convention", sat)
             att_src = "ORBEX"
         else:
             beta, mu = cr.beta_and_mu(pos, vel, sun)
@@ -153,7 +163,6 @@ def compute(epochs, sats, X0, rclk_s, prod, atx, rcv_ant, disp, att_convention_c
         p = an.pco_if(ent)
         apc = pos + ex * p[0] + ey * p[1] + ez * p[2]
         rs = cr.sagnac_rotate(apc, tau)
-        rs_nosag = apc
         vec = rs - Xr
         r = np.linalg.norm(vec, axis=1)
         e = vec / r[:, None]
@@ -190,7 +199,6 @@ def compute(epochs, sats, X0, rclk_s, prod, atx, rcv_ant, disp, att_convention_c
         terms["rcv_antenna"][:, j] = rant
         terms["sat_pcv"][:, j] = spcv
         terms["windup_m"][:, j] = lam_nl * wind
-        del rs_nosag
     m = Model(valid, rho, dts, el, az, los, wu, terms, excluded, ecl_ep, edge_ep, cint_ep, att_src, disp)
     return m
 

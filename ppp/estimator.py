@@ -239,10 +239,14 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
             H = np.array(rows_H)
             v = np.array(rows_v)
             Rd = np.array(rows_R)
-            S = H @ P_pred @ H.T + np.diag(Rd)
-            vbar = v / np.sqrt(np.diag(S))
-            w = np.ones(len(v))
             typ = np.array([r[1] for r in rows_info])
+            # IGG-III screening (TDS § 13.10) on studentised residuals of a preliminary update: the white-noise
+            # receiver clock (sigma 100 m) would otherwise dominate every innovation variance and hide outliers
+            _, _, dx0, P0 = _kalman_update(x_pred, P_pred, H, v, Rd, store)
+            res = v - H @ dx0
+            var_res = np.maximum(Rd - np.einsum("ij,jk,ik->i", H, P0, H), 1e-12 * Rd)
+            vbar = res / np.sqrt(var_res)
+            w = np.ones(len(v))
             for t in (0, 1):                  # type 2 (constraints) are never down-weighted
                 mt = typ == t
                 if mt.any():
@@ -264,18 +268,7 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
                         consec[a] = 0
                 H, v, Rd = H[keep], v[keep], Rd[keep] / w[keep]
                 if len(v):
-                    S = H @ P_pred @ H.T + np.diag(Rd)
-                    try:
-                        cf = cho_factor(S)
-                        K = cho_solve(cf, H @ P_pred).T
-                    except np.linalg.LinAlgError:
-                        store["chol_failures"] += 1
-                        K = P_pred @ H.T @ np.linalg.pinv(S)
-                    x_f = x_pred + K @ v
-                    IKH = np.eye(n) - K @ H
-                    P_f = IKH @ P_pred @ IKH.T + K @ np.diag(Rd) @ K.T
-                    P_f = 0.5 * (P_f + P_f.T)
-                    store["nis"].append((float(v @ np.linalg.solve(S, v)), len(v)))
+                    x_f, P_f, _, _ = _kalman_update(x_pred, P_pred, H, v, Rd, store, nis=True)
         if not ep_rej:
             store["applied"].update(new_applied)
         if ep_rej:
@@ -297,6 +290,25 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
         x, P = x_f, P_f
         kprev = k
     return store
+
+
+def _kalman_update(x_pred, P_pred, H, v, Rd, store, nis=False):
+    """Vector measurement update, Joseph form, symmetrised (TDS § 5.6). Returns x_f, P_f, dx, P_f."""
+    n = len(x_pred)
+    S = H @ P_pred @ H.T + np.diag(Rd)
+    try:
+        cf = cho_factor(S)
+        K = cho_solve(cf, H @ P_pred).T
+        if nis:
+            store["nis"].append((float(v @ cho_solve(cf, v)), len(v)))
+    except np.linalg.LinAlgError:
+        store["chol_failures"] += 1
+        K = P_pred @ H.T @ np.linalg.pinv(S)
+    dx = K @ v
+    IKH = np.eye(n) - K @ H
+    P_f = IKH @ P_pred @ IKH.T + K @ np.diag(Rd) @ K.T
+    P_f = 0.5 * (P_f + P_f.T)
+    return x_pred + dx, P_f, dx, P_f
 
 
 def _augment(keys, x, P, new_arcs, obs, k, arc_k, Phi=None):
