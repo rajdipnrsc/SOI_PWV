@@ -20,6 +20,7 @@ import traceback
 
 import numpy as np
 
+from ppp import ambiguity as amb
 from ppp import antenna as an
 from ppp import coords as co
 from ppp import estimator as est
@@ -483,6 +484,14 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     fm = est.extract_5min(obs_f, sol, day_utc0, day_utc0 + ts.DAY_NS, gflags, arcs.iono_active, epoch_flags,
                           tuple(edge_ok), coord_pull)
 
+    # ---------------------------------------------------------------- PPP-AR layer (separate, never overwrites)
+    ar = None
+    if args.ar:
+        ar = run_ar_layer(ps, sel_c, final, final_mode, fm, arcs, day_utc0, gflags, epoch_flags, edge_ok,
+                          coord_pull, t_mid)
+        manifest_extra["ppp_ar"] = {"status": ar["status"], "metrics": ar.get("metrics", {}),
+                                    "reason": ar.get("reason")}
+
     # ---------------------------------------------------------------- manifest + outputs
     chash, csnap = prd.config_hash()
     man = prd.new_manifest(station, f"{y:04d}-{doy:03d}")
@@ -519,6 +528,15 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
         cols_nc = out.ZTD_COLUMNS + out.PWV_EXTRA
     else:
         rows_nc, cols_nc = rows, out.ZTD_COLUMNS
+    if ar is not None and ar["status"] in ("FIXED", "PARTIAL"):
+        meta_fx = dict(meta, solution_type="FIXED", AR_status=ar["status"])
+        rows_fx = out.ztd_rows(ar["fm"], meta_fx)
+        for r, nfx in zip(rows_fx, ar["n_fixed"]):
+            r["n_amb_fixed"] = int(nfx)
+        fx_csv = os.path.join(args.out, tag + "_FIXED_ZTD.csv")
+        out.write_csv(fx_csv, rows_fx, out.ZTD_COLUMNS, f"{settings.SOFTWARE_NAME} station ZTD, PPP-AR FIXED layer "
+                      f"(experimental until the Stage-6 gate is passed); the FLOAT product is {os.path.basename(ztd_csv)}")
+        written.append(fx_csv)
     nc_path = os.path.join(args.out, tag + "_ZTD.nc")
     try:
         out.write_netcdf(nc_path, rows_nc, cols_nc, {
@@ -668,6 +686,39 @@ def estimate(ctx, X0, arcs0, mode, obs=None, m=None):
             obs.usable &= arcs.arc >= 0
             sol = est.solve(obs, arcs, cfg)
     return {"sol": sol, "obs": obs, "model": m, "X0": X0, "arcs": arcs}
+
+
+def run_ar_layer(ps, sel, final, final_mode, fm_float, arcs, day_utc0, gflags, epoch_flags, edge_ok, coord_pull,
+                 t_mid):
+    """PPP-AR (TDS § 15): only with product status OK_AR; result is a separate FIXED layer."""
+    if ps.status != "OK_AR":
+        LOG.warning("AR_NOT_AVAILABLE: product status %s (%s); float solution only", ps.status, ps.reason)
+        return {"status": "AR_NOT_AVAILABLE", "reason": ps.reason}
+    P1c, P2c, L1c, L2c, info = pp.apply_osb(sel, ps.osb, t_mid, phase=True)
+    sel_ar = copy.copy(sel)
+    sel_ar.P1, sel_ar.P2, sel_ar.L1, sel_ar.L2 = P1c, P2c, L1c, L2c
+    Pif, Lif, _, _ = pp.if_combination(sel_ar)
+    obs_ar = copy.copy(final["obs"])
+    obs_ar.Pif, obs_ar.Lif = Pif, Lif
+    obs_ar.usable = final["obs"].usable & np.isfinite(Lif) & np.isfinite(Pif)
+    mode = {"static_estimated": "static"}.get(final_mode, final_mode)
+    extract = lambda s_: est.extract_5min(obs_ar, s_, day_utc0, day_utc0 + ts.DAY_NS, gflags, arcs.iono_active,  # noqa: E731
+                                          epoch_flags, tuple(edge_ok), coord_pull)
+    LOG.info("PPP-AR: wide-lane / narrow-lane resolution (phase OSB applied to %d signals)", info["applied"])
+    res = amb.run_ar(obs_ar, arcs, final["sol"], sel_ar, mode, fm_float, extract)
+    LOG.info("PPP-AR status %s: %s", res.status, {k: (round(v, 3) if isinstance(v, float) else v)
+                                                  for k, v in res.metrics.items()})
+    if res.status == "AR_REJECTED_CONSISTENCY":
+        LOG.warning("AR_REJECTED_CONSISTENCY: fixed ZTD differs from float beyond the gate; fixed layer not published")
+    out_ = {"status": res.status, "metrics": res.metrics}
+    if res.status in ("FIXED", "PARTIAL"):
+        fixed_arcs = {a for c in res.constraints for a in c[:2]}
+        n_fixed = []
+        for tg in res.fm.t_gpst:
+            kn = int(np.clip(np.searchsorted(obs_ar.epochs, tg), 0, len(obs_ar.epochs) - 1))
+            n_fixed.append(len(fixed_arcs & {int(a) for a in res.solution.arcs.arc[kn] if a >= 0}))
+        out_.update({"fm": res.fm, "n_fixed": n_fixed})
+    return out_
 
 
 def compute_pwv(fm, tropo, coord, mode, ant_status):

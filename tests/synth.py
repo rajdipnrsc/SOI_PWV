@@ -114,3 +114,40 @@ def make_raw(ne=2880, seed=21, sig_p=0.15, sig_l=0.0015, slips=()):
                          np.full((ne_, ns), 45.0), np.full((ne_, ns), 40.0), np.zeros((ne_, ns), dtype=bool),
                          np.where(vis, 0, -1), {0: ("C1W", "L1C", "C2W", "L2W")}, F1, F2)
     return sel, t, el, vis
+
+
+def make_ar(seed=13, sig_p=0.15, sig_l=0.0015):
+    """Dual-frequency synthetic data with integer N1/N2 per arc and fractional receiver phase biases,
+    returning (ObsSet, ArcInfo, SelectedObs, truth) for PPP-AR tests."""
+    obs, arcs, truth = make_obs(seed=seed)
+    rng = np.random.default_rng(seed + 100)
+    ne, ns = obs.el.shape
+    vis = obs.usable.copy()
+    lam1, lam2 = C / F1, C / F2
+    g = (F1 / F2) ** 2
+    geo = obs.rho + obs.mh * obs.zhd0[:, None] + obs.mw * truth["zwd"][:, None] + \
+        obs.mg * (truth["gn"][:, None] * np.cos(obs.az) + truth["ge"][:, None] * np.sin(obs.az)) + truth["clk"][:, None]
+    I1 = 0.162 * 25.0 / np.sin(np.maximum(obs.el, 0.1))
+    N1 = np.zeros((ne, ns))
+    N2 = np.zeros((ne, ns))
+    ints = {}
+    for a, meta in arcs.arc_meta.items():
+        n1, n2 = int(rng.integers(-5000, 5000)), int(rng.integers(-5000, 5000))
+        m = arcs.arc == a
+        N1[m], N2[m] = n1, n2
+        ints[a] = (n1, n2)
+    phi1, phi2 = 0.31, -0.17                      # receiver phase biases (cycles), common to all satellites
+    w = 1 + 1 / np.sin(np.maximum(obs.el, 0.1))
+    P1 = geo + I1 + 1.3 + rng.normal(0, 1, (ne, ns)) * sig_p * w
+    P2 = geo + g * I1 + 2.1 + rng.normal(0, 1, (ne, ns)) * sig_p * w
+    L1 = geo - I1 + lam1 * (N1 + phi1) + rng.normal(0, 1, (ne, ns)) * sig_l * w
+    L2 = geo - g * I1 + lam2 * (N2 + phi2) + rng.normal(0, 1, (ne, ns)) * sig_l * w
+    for a_ in (P1, P2, L1, L2):
+        a_[~vis] = np.nan
+    obs.Pif = A1 * P1 - A2 * P2
+    obs.Lif = A1 * L1 - A2 * L2
+    sel = pp.SelectedObs(obs.epochs, obs.sats, P1, P2, L1, L2, np.full((ne, ns), 45.0), np.full((ne, ns), 40.0),
+                         np.zeros((ne, ns), dtype=bool), np.where(vis, 0, -1), {0: ("C1W", "L1W", "C2W", "L2W")},
+                         F1, F2)
+    truth["ints"] = ints
+    return obs, arcs, sel, truth

@@ -52,7 +52,7 @@ class EstConfig:
     sigma_grad: float = settings.SIGMA_GRAD_M_SQRT_H
     gradients: bool = settings.ESTIMATE_GRADIENTS
     keep_ambiguities: bool = False           # AR pass: retain ambiguities to the window end (TDS § 5.8)
-    amb_constraints: dict = field(default_factory=dict)   # arc -> (value_m, sigma_m) pseudo-observations
+    sd_constraints: list = field(default_factory=list)    # [(arc_a, arc_b, value_m, sigma_m)]: B_a - B_b = value
 
 
 @dataclass
@@ -215,15 +215,22 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
             rows_v.append(v)
             rows_R.append(_sigma2(obs.el[k, j], sp))
             rows_info.append((j, 1, a))
-        # ambiguity pseudo-observations (AR fixed solution, applied at birth epochs, TDS § 15.6)
-        for a, (val, sig) in cfg.amb_constraints.items():
-            if births.get(a) == k and f"AMB[{a}]" in kidx:
-                hc = np.zeros(n)
-                hc[kidx[f"AMB[{a}]"]] = 1.0
-                rows_H.append(hc)
-                rows_v.append(val - x_pred[kidx[f"AMB[{a}]"]])
-                rows_R.append(sig ** 2)
-                rows_info.append((-1, 2, a))
+        # single-difference ambiguity pseudo-observations (fixed solution, TDS § 15.6): applied once, at the
+        # first epoch at which both ambiguities are in the state
+        new_applied = []
+        for ci, (aa, bb, val, sig) in enumerate(cfg.sd_constraints):
+            if ci in store["applied"]:
+                continue
+            ia, ib = kidx.get(f"AMB[{aa}]"), kidx.get(f"AMB[{bb}]")
+            if ia is None or ib is None:
+                continue
+            hc = np.zeros(n)
+            hc[ia], hc[ib] = 1.0, -1.0
+            rows_H.append(hc)
+            rows_v.append(val - (x_pred[ia] - x_pred[ib]))
+            rows_R.append(sig ** 2)
+            rows_info.append((-1, 2, aa))
+            new_applied.append(ci)
         x_f, P_f = x_pred.copy(), P_pred.copy()
         ep_rej = False
         used_rows = []
@@ -235,7 +242,7 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
             vbar = v / np.sqrt(np.diag(S))
             w = np.ones(len(v))
             typ = np.array([r[1] for r in rows_info])
-            for t in (0, 1):
+            for t in (0, 1):                  # type 2 (constraints) are never down-weighted
                 mt = typ == t
                 if mt.any():
                     w[mt] = _igg3(vbar[mt])
@@ -268,6 +275,8 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
                     P_f = IKH @ P_pred @ IKH.T + K @ np.diag(Rd) @ K.T
                     P_f = 0.5 * (P_f + P_f.T)
                     store["nis"].append((float(v @ np.linalg.solve(S, v)), len(v)))
+        if not ep_rej:
+            store["applied"].update(new_applied)
         if ep_rej:
             store["epoch_rejected"][k] = True
             store["rejected"][k, js] = True
@@ -346,17 +355,22 @@ def _rts(recs):
     return xs, Ps
 
 
-def solve(obs, arcs, cfg, max_passes=None):
-    """Forward EKF + RTS smoother with post-fit residual editing (TDS § 13.10, up to 3 passes)."""
+def solve(obs, arcs, cfg, max_passes=None, edit0=None):
+    """Forward EKF + RTS smoother with post-fit residual editing (TDS § 13.10, up to 3 passes).
+
+    edit0: observation edit mask from a previous solution (re-used by the AR / fixed passes)."""
     ne, ns = obs.Pif.shape
-    max_passes = max_passes or settings.MAX_EDIT_PASSES
-    edit = {"removed": np.zeros((ne, ns), dtype=bool), "code_removed": np.zeros((ne, ns), dtype=bool)}
+    max_passes = settings.MAX_EDIT_PASSES if max_passes is None else max_passes
+    if edit0 is not None:
+        edit = {k: v.copy() for k, v in edit0.items()}
+    else:
+        edit = {"removed": np.zeros((ne, ns), dtype=bool), "code_removed": np.zeros((ne, ns), dtype=bool)}
     counts = {"phase_outliers_split": 0, "code_outliers_removed": 0}
     sol = None
     for ps in range(max_passes + 1):
         store = {"recs": [], "births": {}, "rejected": np.zeros((ne, ns), dtype=bool),
                  "used": np.zeros((ne, ns), dtype=np.int8), "n_sat": np.zeros(ne, dtype=np.int16),
-                 "epoch_rejected": np.zeros(ne, dtype=bool), "nis": [], "chol_failures": 0}
+                 "epoch_rejected": np.zeros(ne, dtype=bool), "nis": [], "chol_failures": 0, "applied": set()}
         segs = _segments(obs.t_s, obs.usable & (arcs.arc >= 0))
         keys_all = [None] * ne
         xs_all = [None] * ne
@@ -385,6 +399,7 @@ def solve(obs, arcs, cfg, max_passes=None):
         if n_new == 0:
             break
     sol.edit_counts = counts
+    sol.edit = edit
     return sol
 
 

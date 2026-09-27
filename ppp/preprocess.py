@@ -115,8 +115,9 @@ def if_combination(sel):
     return a1 * sel.P1 - a2 * sel.P2, a1 * sel.L1 - a2 * sel.L2, a1, a2
 
 
-def apply_osb(sel, osb, t_mid):
-    """Subtract satellite OSBs from code (and phase, for AR) observables per exact RINEX code (TDS § 11.5).
+def apply_osb(sel, osb, t_mid, phase=False):
+    """Subtract satellite OSBs per exact RINEX code (TDS § 11.5): code always, phase too when phase=True
+    (PPP-AR: "apply satellite OSBs to all observations"). Missing phase OSB -> phase set to NaN (no AR).
 
     Returns (P1c, P2c, L1c, L2c, info) with info listing missing biases.
     """
@@ -125,16 +126,20 @@ def apply_osb(sel, osb, t_mid):
     applied = 0
     if osb is None:
         return P1, P2, L1, L2, {"applied": 0, "missing": ["no OSB product"]}
+    arrays = [(P1, 0), (P2, 2)] + ([(L1, 1), (L2, 3)] if phase else [])
     for j, prn in enumerate(sel.sats):
-        for kk, (c1, l1, c2, l2) in sel.pair_names.items():
+        for kk, codes in sel.pair_names.items():
             m = sel.pair[:, j] == kk
             if not m.any():
                 continue
-            for arr, code in ((P1, c1), (P2, c2)):
+            for arr, ci in arrays:
+                code = codes[ci]
                 v = osb.get(prn, code, t_mid)
                 if v is None:
                     missing.add(f"{prn}:{code}")
-                    arr[m, j] = np.nan if code not in settings.CLOCK_REFERENCE_CODES["G"] else arr[m, j]
+                    if ci in (1, 3):
+                        arr[m, j] = np.nan          # phase without OSB: not usable for AR
+                    # code without OSB: kept uncorrected, flagged CODE_BIAS_MISSING by the caller
                 else:
                     arr[m, j] -= v
                     applied += 1
