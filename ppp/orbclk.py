@@ -229,7 +229,7 @@ def read_clk(path, systems=("G",)):
             agency = L[0:3].strip()
         elif lab == "SYS / PCVS APPLIED":
             if L[0] in systems or not pcvs:
-                pcvs = L[20:60].strip()
+                pcvs = L[1:60].strip()          # program + source (ANTEX name located later by pattern)
         elif lab == "# OF SOLN STA / TRF":
             trf = L[10:60].strip()
         elif lab == "TIME SYSTEM ID":

@@ -418,12 +418,10 @@ def resolve_products(dl, win_start, win_end, code_obs_used=("C1W", "C2W"), ar_re
 
 
 def _antex_name_from_pcvs(pcvs):
-    """'igs20_2290' from a PCVS APPLIED source field such as 'igs20_2290.atx' or 'IGS20_2290'."""
-    s = pcvs.strip().split()[0] if pcvs.strip() else ""
-    s = os.path.basename(s)
-    if s.lower().endswith(".atx"):
-        s = s[:-4]
-    return s.lower()
+    """ANTEX name such as 'igs20_2290' found anywhere in a SYS / PCVS APPLIED field (verify_log V-009)."""
+    import re
+    m = re.search(r"(igs\d\d(?:_\d{4})?)(?:\.atx)?", pcvs or "", re.IGNORECASE)
+    return m.group(1).lower() if m else ""
 
 
 def _utc_now_ns():

@@ -3,6 +3,7 @@
 
 Every detected slip starts a new ambiguity arc (no repair in v1, TDS § 13.11, F11).
 """
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -219,6 +220,7 @@ def _roti(gf, t_s, valid):
         rot[1:, j] = r
     win = max(int(round(settings.ROTI_WINDOW_S / np.median(dt))), 2) if len(dt) else 10
     roti_sat = np.full((ne, ns), np.nan)
+    warnings.filterwarnings("ignore", message=".*(Degrees of freedom|All-NaN slice|Mean of empty).*")
     for k in range(ne):
         a = max(0, k - win + 1)
         blk = rot[a:k + 1]
@@ -273,7 +275,8 @@ def detect_slips_and_arcs(sel, t_s, el, valid, cutoff_rad):
                     new, why = True, "LLI"
             if not new and n >= 2:
                 # Melbourne-Wuebbena (Blewitt 1990), confirmed by the next epoch (slip vs outlier)
-                sd = max(np.sqrt(s2 / (n - 1)), settings.MW_SIGMA_FLOOR_CYC)
+                # running arc std, floored by an elevation-dependent code-noise model [A, D-008]
+                sd = max(np.sqrt(s2 / (n - 1)), settings.MW_SIGMA_FLOOR_CYC / max(np.sin(el[k, j]), 0.1))
                 thr = max(settings.MW_K * sd, settings.MW_MIN_CYC)
                 if abs(mwc[k, j] - mu) > thr:
                     nxt = ks_use[pos + 1] if pos + 1 < len(ks_use) else None
@@ -291,11 +294,23 @@ def detect_slips_and_arcs(sel, t_s, el, valid, cutoff_rad):
                 cf = np.polyfit(th - th[-1], gh, deg)
                 pred = np.polyval(cf, t_s[k] - th[-1])
                 sfit = np.std(gh - np.polyval(cf, th - th[-1])) if len(th) > deg + 1 else 0.0
-                scale = max(1.0, (t_s[k] - th[-1]) / 30.0) / max(np.sin(el[k, j]), 0.2)
+                # g(dt, e): linear in the sampling gap, sqrt(1/sin e) capped at 2 for elevation [A, D-008]
+                scale = max(1.0, (t_s[k] - th[-1]) / 30.0) * min(np.sqrt(1.0 / max(np.sin(el[k, j]), 0.05)), 2.0)
                 if iono[k]:
                     scale *= 3.0                           # IONO_ACTIVE: GF thresholds scaled up
-                if abs(gf[k, j] - pred) > max(settings.GF_K * sfit, settings.GF_MIN_M * scale):
-                    new, why = True, "GF"
+                thr_gf = max(settings.GF_K * sfit, settings.GF_MIN_M * scale)
+                if abs(gf[k, j] - pred) > thr_gf:
+                    # confirm with the next epoch (level shift persists) to separate slips from outliers
+                    nxt = ks_use[pos + 1] if pos + 1 < len(ks_use) else None
+                    jump = gf[k, j] - pred
+                    jump_n = gf[nxt, j] - np.polyval(cf, t_s[nxt] - th[-1]) if nxt is not None else 0.0
+                    confirmed = nxt is not None and (t_s[nxt] - t_s[k]) <= settings.GAP_RESET_S and \
+                        abs(jump_n) > thr_gf and abs(jump_n - jump) < thr_gf
+                    if confirmed or nxt is None:
+                        new, why = True, "GF"
+                    else:
+                        reasons["GF_OUTLIER"] = reasons.get("GF_OUTLIER", 0) + 1
+                        continue
             if new:
                 nid += 1
                 cur = nid
