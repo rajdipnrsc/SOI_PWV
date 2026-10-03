@@ -335,7 +335,9 @@ def fetch_product(dl, ptype, family, day_ns):
         p = cache_path(dl.cache_dir, family, day_ns, nm)
         if os.path.exists(p):
             meta = read_meta(p)
-            if meta is None or meta.get("sha256") != sha256(p):
+            # (re-)verify when there is no sidecar, the file changed, or an earlier verification failed (the
+            # verification rules may have been corrected since, e.g. V-037)
+            if meta is None or meta.get("sha256") != sha256(p) or not meta.get("verification", {}).get("ok"):
                 ver = verify_file(p, ptype, family, day_ns)
                 meta = {"filename": nm, "sha256": sha256(p), "source_url": (meta or {}).get("source_url", "cache"),
                         "retrieved": (meta or {}).get("retrieved", _now_iso()), "verification": ver,
