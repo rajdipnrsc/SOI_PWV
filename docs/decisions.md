@@ -113,3 +113,20 @@ is logged and stored as a global attribute.
 independent implementation showed up to 1.7 mm range error through the nominal yaw angle near noon/midnight turns
 (threshold 1 mm per term). The Sun is now computed at every epoch (≈ 40 ms per station-day); the decomposition
 maximum is 0.07 mm. Effect on the broadcast-harness HYDE 2024-015 ZTD: −0.3 ± 0.3 mm (max 1.4 mm).
+
+**D-017 (2026-10-03) — tqdm progress bars and a step checklist (user request).**
+TDS § 33.1 admits no further libraries without a decision record. At the user's request `tqdm` is added for
+progress bars (downloads in bytes, RINEX epochs, single-point solution, satellite modelling, cycle-slip detection,
+each Kalman/RTS pass, mapping slots). It is optional at run time: without it, or with `--quiet`, no bars are shown.
+Log lines are printed through `tqdm.write` so they do not break bars; bars go to stderr and never into the log file.
+`pwv_ppp.py` prints the numbered list of processing steps at start and ticks each with its duration
+(`plog.Steps`); the failing step is marked when a run ends early.
+
+**D-018 (2026-10-03) — Earthdata credentials and faster give-up on dead hosts.**
+CDDIS needs a NASA Earthdata login (TDS § 12.3). Sources, in order: environment, git-ignored `credentials.json`
+(written by `python -m ppp.credentials` after a successful test download), `settings.py`, `~/.netrc`. The
+`Authorization` header is sent only to `settings.EARTHDATA_HOSTS` and kept across redirects only between those
+hosts. A login page (HTML) or 401 from CDDIS gives one `EARTHDATA_LOGIN_REQUIRED` warning and skips CDDIS for the
+run. Settings whose names contain PASSWORD/USERNAME/SECRET/TOKEN are excluded from the configuration snapshot.
+A host that refuses or times out twice (`HTTP_RETRIES_CONNECT`) is skipped for the run (previously 5 attempts with
+back-off, ≈ 4 min on an unreachable AIUB).

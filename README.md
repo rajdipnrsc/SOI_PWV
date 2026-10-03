@@ -11,7 +11,7 @@ processor for Survey of India CORS that produces **5-minute zenith total delay (
 ## Install
 
 ```bash
-pip install -r requirements.txt          # numpy scipy pandas requests netCDF4 matplotlib hatanaka (+pytest)
+pip install -r requirements.txt          # numpy scipy pandas requests netCDF4 matplotlib hatanaka tqdm (+pytest)
 ```
 Python ≥ 3.10. No compiled code, no other language.
 
@@ -45,6 +45,23 @@ data, or no CODE orbit/clock: status `WAIT_FOR_TIER`, exit 2, or `FAIL`, exit 3)
 `vmf.geo.tuwien.ac.at` (VMF3/GPT3), `hpiers.obspm.fr` or `data.iana.org` (leap seconds); optional mirrors
 `zhw-b.s3.cloud.switch.ch`, `cddis.nasa.gov` (Earthdata login via `~/.netrc`). All URL templates are in
 `ppp/settings.py`.
+
+**NASA Earthdata login (for the CDDIS mirror).** CDDIS needs a free Earthdata account
+(https://urs.earthdata.nasa.gov). Give it once with
+
+```bash
+python -m ppp.credentials        # asks for user name and password, tests them on CDDIS, saves credentials.json
+```
+`credentials.json` is written next to `pwv_ppp.py`, readable only by you, and ignored by git. Alternatives: the
+environment variables `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD`, a `~/.netrc` line
+`machine urs.earthdata.nasa.gov login USER password PASS`, or `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` in
+`ppp/settings.py` (then never commit that file). Credentials are sent only to `cddis.nasa.gov` /
+`urs.earthdata.nasa.gov` and never appear in logs, manifests or the configuration hash. AIUB and its Switch S3
+mirror need no login.
+
+**Screen output.** A numbered list of processing steps is printed at the start and each step is ticked (✔) with
+its duration when it completes (✘ marks the step where a run ended); downloads and long computations show `tqdm`
+progress bars (hidden with `--quiet`). The log file gets the same step lines without the bars.
 
 **Ocean loading:** the Onsala loading service delivers BLQ files by e-mail only. Request model FES2014b with
 centre-of-mass correction once per station at http://holt.oso.chalmers.se/loading/ and save it as

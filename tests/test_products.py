@@ -26,7 +26,7 @@ def test_candidate_names():
 
 
 def _sp3_text(day, sats=24):
-    L = [f"#dP2024  1 {ts.from_ns(day)[2]:2d}  0  0  0.00000000     289 ORBIT IGS20 FIT  COD",
+    L = [f"#dP2024  1 {ts.from_ns(day)[2]:2d}  0  0  0.00000000     289 ORBIT IGS20 FIT AIUB",   # CODE writes AIUB here
          "## 2297      0.00000000   300.00000000 60324 0.0000000000000", "%c G  cc GPS"]
     for i in range(289):
         t = day + i * 300 * ts.NS
@@ -219,3 +219,65 @@ def test_best_available_and_as_of(tmp_path):
     assert prd.select_manifests(ms, as_of="2024-01-01") == {}
     p = prd.selected_file(prd.select_manifests(ms)[("HYDE", "2024-015")], "_PWV.csv")
     assert p.endswith(os.path.join("superseded", "b", "HYDE_2024015_PWV.csv"))
+
+
+def test_foreign_agency_rejected(tmp_path):
+    p = tmp_path / "x.sp3"
+    p.write_text(_sp3_text(DAY).replace("FIT AIUB", "FIT  GFZ"))
+    v = prd.verify_file(str(p), "SP3", "COD0OPSFIN", DAY)
+    assert not v["ok"] and any("not CODE" in r for r in v["reasons"])
+
+
+def test_earthdata_login_and_isolation(tmp_path, monkeypatch):
+    """Credentials are sent to Earthdata hosts only; a login page triggers EARTHDATA_LOGIN_REQUIRED, not a crash."""
+    import base64
+    import http.server
+    import threading
+    want = "Basic " + base64.b64encode(b"alice:s3cret").decode()
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            if self.headers.get("Authorization") == want:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"0123abcd  file.gz\n")
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<!DOCTYPE html><html>Earthdata Login</html>")
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/SHA512SUMS"
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setattr(settings, "HTTP_RETRIES", 1)
+    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
+    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
+    monkeypatch.chdir(tmp_path)
+    from ppp import credentials
+    monkeypatch.setattr(credentials, "HERE", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))                          # no ~/.netrc
+    # host not an Earthdata host -> never receives credentials
+    monkeypatch.setenv("EARTHDATA_USERNAME", "alice")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "s3cret")
+    dl = prd.Downloader(str(tmp_path / "c"))
+    assert dl.get(url, str(tmp_path / "a")) is False and seen[-1] is None
+    # Earthdata host -> credentials used, file downloaded
+    monkeypatch.setattr(settings, "EARTHDATA_HOSTS", ["127.0.0.1:%d" % srv.server_address[1]])
+    dl = prd.Downloader(str(tmp_path / "c"))
+    assert dl.get(url, str(tmp_path / "b")) is True and seen[-1] == want
+    # wrong password -> login page -> clear hint, host skipped
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "wrong")
+    dl = prd.Downloader(str(tmp_path / "c"))
+    assert dl.get(url, str(tmp_path / "d")) is False
+    assert "Earthdata login" in list(dl.dead_hosts.values())[0]
+    srv.shutdown()
+    # credentials never enter the configuration snapshot / hash
+    monkeypatch.setattr(settings, "EARTHDATA_PASSWORD", "s3cret")
+    assert "EARTHDATA_PASSWORD" not in settings.snapshot() and "s3cret" not in str(settings.snapshot())

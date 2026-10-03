@@ -404,7 +404,9 @@ def read_bias(path):
     inblk = False
     for L in txt.splitlines():
         if L.startswith("%=BIA"):
-            agency = L[15:18]
+            # '%=BIA 1.00 COD 2024:019:31740 COD 2024:014:00000 ...': 3rd token = file agency
+            tok = L.split()
+            agency = tok[2] if len(tok) > 2 else ""
         if L.startswith("+BIAS/SOLUTION"):
             inblk = True
             continue

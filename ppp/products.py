@@ -27,8 +27,29 @@ LOG = plog.get()
 
 
 # =============================================================================================== HTTP
+def _earthdata_session():
+    """requests.Session that keeps the Authorization header only on redirects between Earthdata hosts
+    (cddis.nasa.gov <-> urs.earthdata.nasa.gov), as recommended by NASA; other hosts never see credentials.
+    Without explicit credentials, requests falls back to ~/.netrc (trust_env)."""
+    import requests
+    from urllib.parse import urlparse
+
+    class _S(requests.Session):
+        def rebuild_auth(self, prepared, response):
+            h = prepared.headers
+            new = urlparse(prepared.url).hostname
+            old = urlparse(response.request.url).hostname
+            if "Authorization" in h and old != new and not ({old, new} <= set(settings.EARTHDATA_HOSTS)):
+                del h["Authorization"]
+            if "Authorization" not in h:
+                super().rebuild_auth(prepared, response)
+    s = _S()
+    s.trust_env = True                     # HTTPS_PROXY / HTTP_PROXY / ~/.netrc
+    return s
+
+
 class Downloader:
-    """HTTP(S) downloads with proxy, CA bundle, .netrc, retries/backoff, atomic writes (TDS § 12.3)."""
+    """HTTP(S) downloads with proxy, CA bundle, Earthdata login, retries/backoff, atomic writes (TDS § 12.3)."""
 
     def __init__(self, cache_dir, offline=False, proxy=None):
         self.cache_dir = cache_dir
@@ -36,20 +57,29 @@ class Downloader:
         self.proxy = proxy
         self.attempts = []                 # log of every attempt (URL, status, bytes, duration)
         self.dead_hosts = {}               # host -> reason (circuit breaker for unreachable hosts)
+        self.earthdata_override = None     # (user, password) for the interactive credential test
         self._session = None
+        self._login_hint = False
 
     def session(self):
         if self._session is None:
-            import requests
-            s = requests.Session()
-            s.trust_env = True             # HTTPS_PROXY / HTTP_PROXY / ~/.netrc
+            self._session = _earthdata_session()
             if self.proxy:
-                s.proxies = {"http": self.proxy, "https": self.proxy}
+                self._session.proxies = {"http": self.proxy, "https": self.proxy}
             if settings.CA_BUNDLE:
-                s.verify = settings.CA_BUNDLE
-            s.headers["User-Agent"] = f"{settings.SOFTWARE_NAME}/{settings.SOFTWARE_VERSION}"
-            self._session = s
+                self._session.verify = settings.CA_BUNDLE
+            self._session.headers["User-Agent"] = f"{settings.SOFTWARE_NAME}/{settings.SOFTWARE_VERSION}"
         return self._session
+
+    def _auth_for(self, host):
+        """Explicit Earthdata credentials for Earthdata hosts only (None -> requests uses ~/.netrc)."""
+        if host not in settings.EARTHDATA_HOSTS:
+            return None
+        if self.earthdata_override:
+            return self.earthdata_override
+        from . import credentials
+        u, p, _src = credentials.earthdata()
+        return (u, p) if u and p else None
 
     def get(self, url, dest):
         """Download url to dest atomically. Returns True on success, False if not available."""
@@ -63,20 +93,30 @@ class Downloader:
         os.makedirs(staging, exist_ok=True)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         part = os.path.join(staging, os.path.basename(dest) + f".{uuid.uuid4().hex[:8]}.part")
+        conn_fail = 0
         for attempt in range(settings.HTTP_RETRIES):
             t0 = time.time()
             status, nbytes, err = None, 0, ""
             try:
-                with self.session().get(url, stream=True, allow_redirects=True,
+                with self.session().get(url, stream=True, allow_redirects=True, auth=self._auth_for(host),
                                         timeout=(settings.HTTP_CONNECT_TIMEOUT_S, settings.HTTP_READ_TIMEOUT_S)) as r:
                     status = r.status_code
                     if status == 200:
-                        ctype = r.headers.get("Content-Type", "")
+                        total = int(r.headers.get("Content-Length") or 0) or None
+                        bar = plog.progress(total=total, desc=os.path.basename(url)[:40], unit="B", unit_scale=True,
+                                            unit_divisor=1024)
+                        head = b""
                         with open(part, "wb") as fh:
                             for chunk in r.iter_content(1 << 16):
+                                if len(head) < 512:
+                                    head += chunk[:512]
                                 fh.write(chunk)
                                 nbytes += len(chunk)
-                        if "text/html" in ctype and nbytes < 200000 and url.endswith((".gz", ".Z")):
+                                bar.update(len(chunk))
+                        bar.close()
+                        sniff = head[:512].lstrip().lower()
+                        if sniff.startswith((b"<!doctype html", b"<html")) or (
+                                "text/html" in r.headers.get("Content-Type", "") and url.endswith((".gz", ".Z"))):
                             # login page / error page instead of the product (e.g. Earthdata redirect)
                             status = "HTML"
                             os.remove(part)
@@ -84,11 +124,22 @@ class Downloader:
                             os.replace(part, dest)
                             self._log(url, status, nbytes, time.time() - t0, "")
                             return True
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                err = type(exc).__name__ + ": " + str(exc)[:160]
+                conn_fail += 1
             except requests.exceptions.RequestException as exc:
                 err = type(exc).__name__ + ": " + str(exc)[:160]
             self._log(url, status, nbytes, time.time() - t0, err)
             if os.path.exists(part):
                 os.remove(part)
+            if status in ("HTML", 401) and host in settings.EARTHDATA_HOSTS:
+                if not self._login_hint:
+                    self._login_hint = True
+                    LOG.warning("EARTHDATA_LOGIN_REQUIRED: %s answered with a login page/401. Give your NASA "
+                                "Earthdata login once with 'python -m ppp.credentials' (or EARTHDATA_USERNAME / "
+                                "EARTHDATA_PASSWORD, or ~/.netrc); CDDIS is skipped for this run", host)
+                self.dead_hosts[host] = "Earthdata login required"
+                return False
             if status in (404, 410, "HTML", 401):
                 return False
             if status == 403 or (err and ("ProxyError" in err or "403" in err)):
@@ -96,13 +147,15 @@ class Downloader:
                 LOG.warning("DOWNLOAD_BLOCKED: host %s refused (%s); it is skipped for the rest of this run",
                             host, err or "HTTP 403")
                 return False
+            if conn_fail >= settings.HTTP_RETRIES_CONNECT:
+                break
             if attempt + 1 < settings.HTTP_RETRIES:
                 wait = min(2 ** (attempt + 1) + random.uniform(0, 1), settings.HTTP_BACKOFF_MAX_S)
                 LOG.debug("retry %d for %s in %.1f s", attempt + 1, url, wait)
                 time.sleep(wait)
         self.dead_hosts[host] = "unreachable after retries"
-        LOG.warning("DOWNLOAD_HOST_UNREACHABLE: %s did not respond after %d attempts; skipped for this run",
-                    host, settings.HTTP_RETRIES)
+        LOG.warning("DOWNLOAD_HOST_UNREACHABLE: %s did not respond (%s); skipped for this run, other sources are "
+                    "tried", host, err or "no answer")
         return False
 
     def _log(self, url, status, nbytes, dur, err):
@@ -182,8 +235,8 @@ def verify_file(path, ptype, family, day_ns):
             res["summary"] = {"agency": sp.agency, "frame": sp.frame, "first": ts.iso(sp.epochs[0]),
                               "last": ts.iso(sp.epochs[-1]), "n_gps": len(gps), "interval_s": sp.interval,
                               "time_system": sp.time_system}
-            if not sp.agency.upper().startswith("COD"):
-                res["reasons"].append(f"agency {sp.agency} is not COD")
+            if sp.agency.upper() not in settings.CODE_AGENCY_NAMES:
+                res["reasons"].append(f"agency {sp.agency} is not CODE")
             if sp.epochs[0] > d0 or sp.epochs[-1] < d1 - 600 * ts.NS:
                 res["reasons"].append("epoch coverage incomplete")
             if len(gps) < settings.MIN_GPS_SATS_IN_PRODUCT:
@@ -196,8 +249,8 @@ def verify_file(path, ptype, family, day_ns):
             lasts = [v[0][-1] for v in ck.sats.values() if len(v[0])]
             res["summary"] = {"agency": ck.agency, "pcvs": ck.pcvs, "trf": ck.trf, "n_gps": len(ck.sats),
                               "interval_s": ck.interval, "version": ck.version}
-            if not ck.agency.upper().startswith("COD"):
-                res["reasons"].append(f"analysis centre {ck.agency} is not COD")
+            if ck.agency.upper() not in settings.CODE_AGENCY_NAMES:
+                res["reasons"].append(f"analysis centre {ck.agency} is not CODE")
             if len(ck.sats) < settings.MIN_GPS_SATS_IN_PRODUCT:
                 res["reasons"].append(f"only {len(ck.sats)} GPS satellites")
             if not firsts or min(firsts) > d0 or max(lasts) < d1 - 60 * ts.NS:
@@ -210,8 +263,8 @@ def verify_file(path, ptype, family, day_ns):
             sig = sorted({c for (_p, c) in bi.osb if _p.startswith("G")})
             res["summary"] = {"agency": bi.agency, "gps_signals": sig,
                               "n_gps": len({p for (p, _c) in bi.osb if p.startswith("G")})}
-            if bi.agency and not bi.agency.upper().startswith("COD"):
-                res["reasons"].append(f"agency {bi.agency} is not COD")
+            if bi.agency and bi.agency.upper() not in settings.CODE_AGENCY_NAMES:
+                res["reasons"].append(f"agency {bi.agency} is not CODE")
         elif ptype == "ATT":
             at = orbclk.read_obx(path)
             res["summary"] = {"n_sat": len(at.sats)}

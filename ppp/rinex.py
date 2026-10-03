@@ -174,7 +174,8 @@ def read_obs(path, systems=None, decimate_s=None):
     keep = np.zeros(n_all, dtype=bool)
     flags = np.zeros(n_all, dtype=np.int8)
     clk = np.full(n_all, np.nan)
-    for k, i in enumerate(epoch_idx):
+    from . import log as plog
+    for k, i in plog.progress(list(enumerate(epoch_idx)), desc=f"Reading {os.path.basename(path)}", unit="epoch"):
         L = lines[i]
         try:
             y, mo, d, hh, mi = int(L[2:6]), int(L[7:9]), int(L[10:12]), int(L[13:15]), int(L[16:18])

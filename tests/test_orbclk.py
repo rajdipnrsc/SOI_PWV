@@ -108,6 +108,7 @@ AS R01       2024 01 15 00 00  0.000000  1    1.0E-04
 -BIAS/SOLUTION
 """)
     b = orbclk.read_bias(str(bia))
+    assert b.agency == "COD"
     t = ts.to_ns(2024, 1, 15, 12)
     assert b.get("G01", "C1C", t) == pytest.approx(-1e-9 * 299792458.0)
     assert b.signals("G01") == {"C1C", "L1C"}

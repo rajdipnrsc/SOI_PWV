@@ -5,3 +5,6 @@ cache/
 results/
 /validation/runs/
 *.part
+credentials.json
+pwv_ppp_settings.json
+pwv_ppp_settings.yaml

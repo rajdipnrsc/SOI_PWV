@@ -167,7 +167,10 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
     consec = {}
     births = store["births"]
     kprev = k0
+    bar = store.get("bar")
     for k in range(k0, k1 + 1):
+        if bar is not None:
+            bar.update(1)
         m = obs.usable[k] & ~edit["removed"][k]
         arc_k = arcs.arc[k]
         js = np.nonzero(m & (arc_k >= 0))[0]
@@ -422,6 +425,8 @@ def solve(obs, arcs, cfg, max_passes=None, edit0=None):
                  "used": np.zeros((ne, ns), dtype=np.int8), "n_sat": np.zeros(ne, dtype=np.int16),
                  "epoch_rejected": np.zeros(ne, dtype=bool), "nis": [], "chol_failures": 0, "applied": set()}
         segs = _segments(obs.t_s, obs.usable & (arcs.arc >= 0))
+        store["bar"] = plog.progress(total=sum(b - a + 1 for a, b in segs),
+                                     desc=f"Kalman filter + smoother, pass {ps + 1}", unit="epoch")
         keys_all = [None] * ne
         xs_all = [None] * ne
         Ps_all = [None] * ne
@@ -435,6 +440,7 @@ def solve(obs, arcs, cfg, max_passes=None, edit0=None):
                 k = r["k"]
                 keys_all[k], xs_all[k], Ps_all[k] = r["keys"], xx, PP
                 xf_all[k], Pf_all[k] = r["x_f"], r["P_f"]
+        store["bar"].close()
         nis_num = sum(v for v, _ in store["nis"])
         nis_den = sum(d for _, d in store["nis"])
         sol = Solution(keys_all, xs_all, Ps_all, xf_all, Pf_all, store["used"], store["rejected"], store["n_sat"],

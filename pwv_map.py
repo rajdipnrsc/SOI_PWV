@@ -128,7 +128,7 @@ def main(argv=None):
     LOG.info("Covariance (REML, %d slots): sigma_s %.2f mm, L %.0f km, nugget %.2f mm%s", cp.n_slots, cp.sigma_s,
              cp.L_km, cp.nugget, "" if cp.fitted else " (defaults: too few stations)")
     results = []
-    for i, sl in enumerate(slots):
+    for i, sl in enumerate(plog.progress(slots, desc="Mapping slots", unit="slot")):
         results.append(mp.map_slot(grid, stations, sl, cp, bg, exclude=black))
         if i % 16 == 0:
             r = results[-1]
@@ -158,7 +158,8 @@ def main(argv=None):
         LOG.info("wrote %s", cpath)
     if a.hourly:
         hslots = np.arange(day, day + ts.DAY_NS, 3600 * ts.NS, dtype=np.int64)
-        hres = [mp.map_slot(grid, stations, sl, cp, bg, window="01H", exclude=black) for sl in hslots]
+        hres = [mp.map_slot(grid, stations, sl, cp, bg, window="01H", exclude=black)
+                for sl in plog.progress(hslots, desc="Hourly archive", unit="slot")]
         # consistency: hourly map vs mean of the 15-min maps in [t - 30, t + 30) min (TDS § 25)
         diffs = []
         for sl, hr in zip(hslots, hres):
@@ -172,7 +173,7 @@ def main(argv=None):
         LOG.info("wrote %s", hpath)
     if a.cv:
         rows = []
-        for sl in slots[::4]:
+        for sl in plog.progress(slots[::4], desc="Cross-validation (LOSO)", unit="slot"):
             rows += mp.loso(stations, sl, cp, bg, exclude=black)
         met = mp.cv_metrics(rows)
         LOG.info("LOSO cross-validation (hourly slots): %s", {k: round(v, 3) for k, v in met.items()})

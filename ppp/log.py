@@ -5,6 +5,7 @@ that every assumption/fallback can be written to the manifest (TDS § 9.11: prin
 """
 import logging
 import sys
+import time
 
 LOGGER_NAME = "pwv_ppp"
 _FMT = "%(asctime)s %(levelname)-7s %(message)s"
@@ -25,6 +26,18 @@ class _WarningCollector(logging.Handler):
 
 
 _collector = _WarningCollector()
+_state = {"progress": True}
+
+
+class _TqdmHandler(logging.StreamHandler):
+    """Console handler that prints through tqdm.write so log lines do not break progress bars."""
+
+    def emit(self, record):
+        try:
+            from tqdm import tqdm
+            tqdm.write(self.format(record), file=self.stream)
+        except ImportError:
+            super().emit(record)
 
 
 def get():
@@ -37,7 +50,8 @@ def setup(level="normal"):
     lg.setLevel(logging.DEBUG)
     for h in list(lg.handlers):
         lg.removeHandler(h)
-    sh = logging.StreamHandler(sys.stdout)
+    sh = _TqdmHandler(sys.stdout)
+    _state["progress"] = level != "quiet"
     sh.setLevel({"quiet": logging.WARNING, "verbose": logging.DEBUG}.get(level, logging.INFO))
     sh.setFormatter(logging.Formatter(_FMT, _DATEFMT))
     lg.addHandler(sh)
@@ -65,3 +79,88 @@ def warnings():
 def warn(code, message):
     """Emit a coded WARNING ('CODE: message'); codes are recorded in flags/manifest."""
     get().warning("%s: %s", code, message)
+
+
+# ------------------------------------------------------------------------------------------- progress bars
+def progress(iterable=None, total=None, desc="", unit="it", **kw):
+    """tqdm progress bar (screen only; disabled with --quiet or when tqdm is not installed)."""
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
+    if tqdm is None or not _state["progress"]:
+        return _NoBar(iterable)
+    return tqdm(iterable, total=total, desc=f"    {desc}", unit=unit, leave=False, dynamic_ncols=True,
+                file=sys.stderr, mininterval=0.3, **kw)
+
+
+class _NoBar:
+    def __init__(self, iterable=None):
+        self.iterable = iterable
+
+    def __iter__(self):
+        return iter(self.iterable)
+
+    def update(self, n=1):
+        pass
+
+    def set_postfix_str(self, *a, **k):
+        pass
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+# ------------------------------------------------------------------------------------------ step checklist
+def _tick(ok=True):
+    sym = ("\u2714" if ok else "\u2718")
+    try:
+        sym.encode(sys.stdout.encoding or "ascii")
+        return sym
+    except (UnicodeEncodeError, LookupError):
+        return "[x]" if ok else "[!]"
+
+
+class Steps:
+    """Numbered checklist printed at the start of a run; each step is ticked when it completes."""
+
+    def __init__(self, items):
+        self.items = list(items)          # [(key, title)]
+        self.done = {}
+        self.t0 = time.time()
+        self.t_last = self.t0
+        lg = get()
+        lg.info("Processing steps:")
+        for i, (_k, title) in enumerate(self.items, 1):
+            lg.info("   [ ] %d. %s", i, title)
+
+    def _idx(self, key):
+        return next(i for i, (k, _t) in enumerate(self.items, 1) if k == key)
+
+    def ok(self, key, detail=""):
+        i = self._idx(key)
+        now = time.time()
+        self.done[key] = True
+        get().info("%s %d/%d %s%s  (%.1f s)", _tick(True), i, len(self.items), self.items[i - 1][1],
+                   f" - {detail}" if detail else "", now - self.t_last)
+        self.t_last = now
+
+    def skip(self, key, reason=""):
+        i = self._idx(key)
+        self.done[key] = None
+        get().info("-  %d/%d %s skipped%s", i, len(self.items), self.items[i - 1][1], f" ({reason})" if reason else "")
+        self.t_last = time.time()
+
+    def fail(self, key=None, reason=""):
+        key = key or next((k for k, _t in self.items if k not in self.done), None)
+        if key is None:
+            return
+        i = self._idx(key)
+        get().error("%s %d/%d %s failed%s", _tick(False), i, len(self.items), self.items[i - 1][1],
+                    f": {reason}" if reason else "")

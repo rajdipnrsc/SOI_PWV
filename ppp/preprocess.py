@@ -259,7 +259,7 @@ def detect_slips_and_arcs(sel, t_s, el, valid, cutoff_rad):
     nid = 0
     meta = {}
     dt_nom = float(np.median(np.diff(t_s))) if ne > 1 else 30.0
-    for j in range(ns):
+    for j in plog.progress(range(ns), desc="Cycle-slip detection", unit="sat"):
         ks_use = np.nonzero(usable[:, j])[0]
         cur = -1
         last_k = None

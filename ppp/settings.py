@@ -116,6 +116,9 @@ CHECKSUM_MANIFESTS = {
         ("sha512", "https://cddis.nasa.gov/archive/gnss/products/{wwww}/SHA512SUMS"),
         ("md5", "https://cddis.nasa.gov/archive/gnss/products/{wwww}/MD5SUMS")],
 }
+# Agency labels written by CODE in product headers: SP3 line 1 cols 57-60 = "AIUB"; clock RINEX "ANALYSIS CENTER"
+# = "COD"; Bias-SINEX %=BIA agency = "COD" (checked on 2024 files, verify_log V-037).
+CODE_AGENCY_NAMES = {"COD", "AIUB", "CODE"}
 REQUIRED_FLOAT = ["SP3", "CLK", "ERP"]          # + OSB when observables are not clock-reference [TDS § 11.3]
 REQUIRED_AR = ["SP3", "CLK", "ERP", "OSB"]
 MAX_EXPECTED_LATENCY_H = {"COD0OPSFIN": 21 * 24, "CODMOPSRAP": 48, "COD0OPSRAP": 48}  # [A, TDS § 11.4]
@@ -141,7 +144,15 @@ VMF3_HOURS = (0, 6, 12, 18)
 HTTP_CONNECT_TIMEOUT_S = 20
 HTTP_READ_TIMEOUT_S = 120
 HTTP_RETRIES = 5
+HTTP_RETRIES_CONNECT = 2             # connection refused/timeout twice -> host skipped for the run
 HTTP_BACKOFF_MAX_S = 300
+# NASA Earthdata login for CDDIS (TDS § 12.3). Preferred: 'python -m ppp.credentials' (stores credentials.json,
+# git-ignored) or environment variables EARTHDATA_USERNAME / EARTHDATA_PASSWORD or ~/.netrc. Values may also be
+# typed here, but then never commit this file. Credentials are excluded from manifests and the configuration hash.
+EARTHDATA_USERNAME = ""
+EARTHDATA_PASSWORD = ""
+EARTHDATA_HOSTS = ["cddis.nasa.gov", "urs.earthdata.nasa.gov"]
+EARTHDATA_TEST_URL = "https://cddis.nasa.gov/archive/gnss/products/2297/SHA512SUMS"
 CA_BUNDLE = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE") or None
 
 # ----------------------------------------------------------------------------------------------
@@ -381,7 +392,7 @@ def snapshot():
     g = globals()
     out = {}
     for k in sorted(g):
-        if k.isupper():
+        if k.isupper() and not any(x in k for x in ("PASSWORD", "USERNAME", "SECRET", "TOKEN")):
             v = g[k]
             if isinstance(v, dict):
                 v = {str(kk): vv for kk, vv in v.items()}

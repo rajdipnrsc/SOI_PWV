@@ -98,7 +98,7 @@ def compute(epochs, sats, X0, rclk_s, prod, atx, rcv_ant, disp, att_convention_c
     att_src = "nominal"
     use_att = prod.att is not None
     conv_checked = False
-    for j, sat in enumerate(sats):
+    for j, sat in plog.progress(list(enumerate(sats)), desc="Modelling satellites", unit="sat"):
         if sat not in prod.sp3.sats:
             excluded["no_orbit"] += 1
             continue
@@ -258,7 +258,7 @@ def spp(sel, epochs, prod, X_apriori=None, max_epochs=240):
     sols = []
     for it in range(2):
         sols = []
-        for k in idx:
+        for k in plog.progress(idx, desc=f"Single-point solution {it + 1}/2", unit="epoch"):
             m = np.isfinite(Pif[k]) & np.array([s in prod.sp3.sats for s in sel.sats])
             js = np.nonzero(m)[0]
             if len(js) < 5:

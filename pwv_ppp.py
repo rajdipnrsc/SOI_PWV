@@ -215,10 +215,25 @@ def merge_obs(parts, t0, t1):
 
 
 # ============================================================================================ run
+STEP_LIST = [("rinex", "Read RINEX observation and navigation files"),
+             ("products", "Find, download and verify CODE products (orbit, clock, ERP, biases, attitude)"),
+             ("antex", "Antenna calibrations (ANTEX)"),
+             ("apriori", "Observables, code biases, single-point solution, coordinates, troposphere a priori"),
+             ("preprocess", "Preprocessing: cycle slips, clock jumps, ambiguity arcs"),
+             ("estimate", "PPP estimation (Kalman filter + RTS smoother, residual editing)"),
+             ("extract", "5-minute ZTD values and quality flags"),
+             ("ar", "PPP-AR layer (experimental)"),
+             ("pwv", "ZTD -> PWV conversion"),
+             ("outputs", "Write outputs (CSV, NetCDF, SINEX_TRO, quick-look, manifest)")]
+STEPS = None                                     # current plog.Steps checklist (for failure reporting in main)
+
+
 def run(args, products_override=None, tropo_override=None, atx_override=None):
+    global STEPS
     t_start = time.time()
     plog.setup("quiet" if args.quiet else ("verbose" if args.verbose else "normal"))
     applied = settings.apply_overrides()
+    STEPS = plog.Steps(STEP_LIST)
     os.makedirs(args.out, exist_ok=True)
     warnings_flags = set()
     manifest_extra = {}
@@ -282,6 +297,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
         LOG.info("No adjacent-day RINEX: window = data span; outputs near the day edges get the EDGE flag")
     epochs = obs_d.epochs
 
+    STEPS.ok("rinex", f"{station}, {len(obs_d.epochs)} epochs, {len(gps_sats)} GPS satellites")
+
     # ---------------------------------------------------------------- products
     dl = prd.Downloader(settings.CACHE_DIR, offline=args.offline, proxy=args.proxy)
     leap = prd.get_leap_seconds(dl)
@@ -326,6 +343,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     LOG.info("Product frame label %r -> %s; clock header ANTEX %r", ps.frame_label, family or "UNKNOWN",
              ps.antex_name or "-")
 
+    STEPS.ok("products", f"{ps.family} ({ps.tier}), status {ps.status}")
+
     # ---------------------------------------------------------------- ANTEX
     if atx_override is not None:
         atx, atx_meta, atx_status = atx_override, {"sha256": None}, "OVERRIDE"
@@ -347,6 +366,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
         warnings_flags.add("NO_ANTENNA_CALIBRATION")
     else:
         LOG.info("Receiver antenna calibration: %s (%s)", rcv_ant.type, ant_status)
+
+    STEPS.ok("antex", f"{atx.name}, receiver antenna {ant_status}")
 
     # ---------------------------------------------------------------- station metadata, header registry
     prev = _previous_manifest(args.out, station, day)
@@ -505,6 +526,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                 LOG.info("Satellite %s: %d epochs excluded (broadcast health flag unhealthy)", prn,
                          int(excl_mask[:, j].sum()))
 
+    STEPS.ok("apriori", f"ZHD {tropo.zhd_source}, mapping {tropo.mapping_function}")
+
     # ---------------------------------------------------------------- common preprocessing
     ctx = dict(epochs=epochs, sel=sel_c, Pif=Pif, Lif=Lif, ps=ps, atx=atx, rcv_ant=rcv_ant, tropo=tropo, blq=blq,
                rclk=rclk_spp, cutoff=np.radians(args.cutoff), a1=a1, a2=a2)
@@ -530,6 +553,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
              int(arcs.iono_active.sum()))
     if arcs.n_arcs == 0:
         raise Stop("FAIL", "NO_USABLE_ARCS: no satellite arc survives preprocessing")
+
+    STEPS.ok("preprocess", f"{arcs.n_arcs} arcs")
 
     # ---------------------------------------------------------------- estimation passes (auto mode, § 9.12)
     result = {}
@@ -605,6 +630,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     if conv_t is not None:
         LOG.info("Forward-filter convergence time (|fwd - smoothed| < 10 mm for 30 min): %.0f min", conv_t / 60)
 
+    STEPS.ok("estimate", f"mode {final_mode}, NIS/dof {sol.nis:.2f}")
+
     # ---------------------------------------------------------------- 5-minute extraction (UTC day D)
     day_utc0 = ts.to_ns(*ts.from_ns(day)[:3])            # UTC calendar day with the same date
     epoch_flags = {"ECLIPSE_EXCLUSION": final["model"].eclipse_epochs,
@@ -616,6 +643,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     fm = est.extract_5min(obs_f, sol, day_utc0, day_utc0 + ts.DAY_NS, gflags, arcs.iono_active, epoch_flags,
                           tuple(edge_ok), coord_pull)
 
+    STEPS.ok("extract", f"{int(np.isfinite(fm.zwd).sum())}/{len(fm.zwd)} values")
+
     # ---------------------------------------------------------------- PPP-AR layer (separate, never overwrites)
     ar = None
     if args.ar:
@@ -623,6 +652,9 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                           coord_pull, t_mid)
         manifest_extra["ppp_ar"] = {"status": ar["status"], "metrics": ar.get("metrics", {}),
                                     "reason": ar.get("reason")}
+        STEPS.ok("ar", ar["status"])
+    else:
+        STEPS.skip("ar", "not requested; use --ar")
 
     # ---------------------------------------------------------------- manifest + outputs
     chash, csnap = prd.config_hash()
@@ -644,6 +676,7 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     pw_res = None
     if not args.no_pwv:
         pw_res, pw_meta = compute_pwv(fm, tropo, coord_final, final_mode, ant_status, baro, era5_for_day(day))
+        STEPS.ok("pwv", f"mean {np.nanmean(pw_res.pwv):.1f} mm ({pw_meta})")
         prow = []
         for r, i in zip(rows, range(len(rows))):
             rr = dict(r)
@@ -749,6 +782,9 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     written.append(mpath)
     for p in written:
         LOG.info("  wrote %s", p)
+    if args.no_pwv:
+        STEPS.skip("pwv", "--no-pwv")
+    STEPS.ok("outputs", f"{len(written)} files in {args.out}")
     # ---------------------------------------------------------------- summary
     n_val = int(np.isfinite(fm.zwd).sum())
     conv_frac = np.mean([c == "CONVERGED" for c in fm.conv]) if len(fm.conv) else 0.0
@@ -963,6 +999,8 @@ def main(argv=None):
         run(args)
         return 0
     except Stop as s:
+        if STEPS is not None:
+            STEPS.fail(reason=s.status)
         LOG.error("%s", s.message)
         LOG.error("Run ended with status %s (no ZTD written).", s.status)
         return s.code
