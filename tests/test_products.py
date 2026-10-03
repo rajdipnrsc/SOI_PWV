@@ -169,3 +169,31 @@ def test_outputs_archived_not_overwritten(tmp_path):
     assert mid == "abc"
     assert (tmp_path / "superseded" / "abc" / "HYDE_2024015_ZTD.csv").read_text() == "old"
     assert not (tmp_path / "HYDE_2024015_ZTD.csv").exists()
+
+
+def test_published_checksum_manifest(tmp_path, server, monkeypatch):
+    """TDS § 12.4 item 2: files are compared with the source's SHA512SUMS; a mismatch rejects the file."""
+    import hashlib
+    root, url = server
+    tmpl = url + "/{yyyy}/{filename}"
+    monkeypatch.setattr(settings, "PRODUCT_SOURCES", [tmpl])
+    monkeypatch.setattr(settings, "CHECKSUM_MANIFESTS", {tmpl: [("sha512", url + "/{yyyy}/SHA512SUMS")]})
+    monkeypatch.setattr(settings, "HTTP_RETRIES", 1)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    _publish(root, "COD0OPSFIN", [DAY])
+    d = root / "2024"
+    lines = []
+    for f in sorted(d.iterdir()):
+        h = hashlib.sha512(f.read_bytes()).hexdigest()
+        if "CLK" in f.name:
+            h = "0" * 128                                   # wrong digest for the clock file
+        lines.append(f"{h}  {f.name}")
+    (d / "SHA512SUMS").write_text("\n".join(lines) + "\n")
+    assert prd.parse_checksum_manifest("ab12  *x.gz\nnot a line\n") == {"x.gz": "ab12"}
+    dl = prd.Downloader(str(tmp_path / "cache"))
+    p, meta = prd.fetch_product(dl, "SP3", "COD0OPSFIN", DAY)
+    assert p is not None and meta["verification"]["published_checksum"]["result"] == "OK"
+    p2, why = prd.fetch_product(dl, "CLK", "COD0OPSFIN", DAY)
+    assert p2 is None
+    assert sum(a["url"].endswith("SHA512SUMS") for a in dl.attempts) == 1      # manifest fetched once per run

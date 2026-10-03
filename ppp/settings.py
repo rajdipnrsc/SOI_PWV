@@ -108,6 +108,13 @@ PRODUCT_SOURCES = [
     "https://zhw-b.s3.cloud.switch.ch/aiub/CODE/{yyyy}/{filename}",
     "https://cddis.nasa.gov/archive/gnss/products/{wwww}/{filename}",
 ]
+# Published checksum manifests per source (TDS § 12.4 item 2): source template -> [(algorithm, manifest URL template)].
+# CDDIS publishes SHA512SUMS (earlier MD5SUMS) per weekly product directory (VERIFY V-035).
+CHECKSUM_MANIFESTS = {
+    "https://cddis.nasa.gov/archive/gnss/products/{wwww}/{filename}": [
+        ("sha512", "https://cddis.nasa.gov/archive/gnss/products/{wwww}/SHA512SUMS"),
+        ("md5", "https://cddis.nasa.gov/archive/gnss/products/{wwww}/MD5SUMS")],
+}
 REQUIRED_FLOAT = ["SP3", "CLK", "ERP"]          # + OSB when observables are not clock-reference [TDS § 11.3]
 REQUIRED_AR = ["SP3", "CLK", "ERP", "OSB"]
 MAX_EXPECTED_LATENCY_H = {"COD0OPSFIN": 21 * 24, "CODMOPSRAP": 48, "COD0OPSRAP": 48}  # [A, TDS § 11.4]

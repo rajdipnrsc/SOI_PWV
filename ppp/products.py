@@ -226,6 +226,49 @@ def cache_path(cache_dir, family, day_ns, filename):
     return os.path.join(cache_dir, "COD", family, tok["yyyy"], tok["ddd"], filename)
 
 
+def file_hash(path, algo):
+    h = hashlib.new(algo)
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_checksum_manifest(text):
+    """'<hex digest>  <filename>' lines (sha512sum/md5sum format; '*' binary marker allowed) -> {filename: digest}."""
+    out_ = {}
+    for ln in text.splitlines():
+        parts = ln.strip().split()
+        if len(parts) >= 2 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
+            out_[os.path.basename(parts[-1].lstrip("*"))] = parts[0].lower()
+    return out_
+
+
+def check_published_checksum(dl, tmpl, tok, filename, path):
+    """Compare a downloaded file with the checksum manifest published by its source (TDS § 12.4 item 2).
+
+    Returns {"algorithm", "result": OK | MISMATCH | NOT_LISTED | NOT_PUBLISHED, "manifest"}."""
+    for algo, mtmpl in settings.CHECKSUM_MANIFESTS.get(tmpl, []):
+        murl = mtmpl.format(**tok)
+        cache = dl.__dict__.setdefault("_manifests", {})
+        if murl not in cache:
+            mpath = os.path.join(dl.cache_dir, "staging", "checksums", f"{uuid.uuid5(uuid.NAMESPACE_URL, murl).hex}")
+            cache[murl] = None
+            if dl.get(murl, mpath):
+                with open(mpath, "r", errors="replace") as fh:
+                    cache[murl] = parse_checksum_manifest(fh.read())
+                os.remove(mpath)
+        table = cache[murl]
+        if table is None:
+            continue
+        want = table.get(filename)
+        if want is None:
+            return {"algorithm": algo, "result": "NOT_LISTED", "manifest": murl}
+        got = file_hash(path, algo)
+        return {"algorithm": algo, "result": "OK" if got == want else "MISMATCH", "manifest": murl}
+    return {"algorithm": None, "result": "NOT_PUBLISHED", "manifest": None}
+
+
 def fetch_product(dl, ptype, family, day_ns):
     """Cache -> sources. Returns (path, meta) of a verified file, or (None, reason)."""
     names = candidate_names(ptype, family, day_ns)
@@ -257,7 +300,14 @@ def fetch_product(dl, ptype, family, day_ns):
             tmp_dest = dest + ".new"
             if not dl.get(url, tmp_dest):
                 continue
+            chk = check_published_checksum(dl, tmpl, tok, nm, tmp_dest)
+            if chk["result"] == "MISMATCH":
+                LOG.warning("CHECKSUM_MISMATCH: %s from %s does not match %s (%s); file rejected", nm, url,
+                            chk["manifest"], chk["algorithm"])
+                os.remove(tmp_dest)
+                continue
             ver = verify_file(tmp_dest, ptype, family, day_ns)
+            ver["published_checksum"] = chk
             h = sha256(tmp_dest)
             if os.path.exists(dest):
                 old = read_meta(dest) or {}
