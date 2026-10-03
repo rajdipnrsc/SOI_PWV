@@ -42,6 +42,7 @@ class ObsSet:
     usable: np.ndarray           # (ne, ns) bool
     f_if: float = 2.98
     X0: np.ndarray = None
+    var_b: np.ndarray = None     # (ne, ns) factor of sigma_b^2; None = 1/sin^2(e); SNR model if SNR_WEIGHTING
 
 
 @dataclass
@@ -83,9 +84,45 @@ def _base_keys(cfg):
     return k
 
 
-def _sigma2(el, ab):
-    s = np.sin(np.maximum(el, np.radians(1.0)))
-    return ab[0] ** 2 + ab[1] ** 2 / s ** 2
+def _sigma2(el, ab, gb=None):
+    """sigma^2 = sigma_a^2 + sigma_b^2 g_b with g_b = 1/sin^2(e) (TDS § 5.4) or the SNR factor (snr_var_factor)."""
+    if gb is None:
+        s = np.sin(np.maximum(el, np.radians(1.0)))
+        gb = 1.0 / s ** 2
+    return ab[0] ** 2 + ab[1] ** 2 * gb
+
+
+def snr_var_factor(el, s1, s2, alpha1, alpha2, ref=None):
+    """Optional SNR weighting (TDS § 5.4, Hartinger & Brunner 1999): the sigma_b^2 term is scaled by
+    10^((SNR_ref - SNR)/10) per frequency and combined for the IF observable with the IF coefficients.
+
+    SNR scales differ between receivers and tracking modes (semi-codeless L2W is reported 5-15 dB lower), so by
+    default (ref=None) SNR_ref is set per frequency such that the median factor equals the median 1/sin^2(e) of the
+    same observations (the overall weight level stays that of the elevation model, only the relative weights change);
+    factors are clipped to [1, 1/sin^2(SNR_WEIGHT_MIN_EL)].  The elevation model is used where SNR is missing."""
+    el = np.asarray(el, dtype=float)
+    s = np.sin(np.maximum(np.nan_to_num(el, nan=np.pi / 2), np.radians(1.0)))
+    g_el = 1.0 / s ** 2
+    gmax = 1.0 / np.sin(np.radians(settings.SNR_WEIGHT_MIN_EL_DEG)) ** 2
+    gs = []
+    for sn in (s1, s2):
+        sn = np.asarray(sn, dtype=float)
+        sn = np.where(sn > 0, sn, np.nan)
+        r = ref
+        if r is None:
+            ok = np.isfinite(sn) & np.isfinite(el)
+            if ok.sum() < 10:
+                gs.append(np.full(el.shape, np.nan))
+                continue
+            # median(10^((r - S)/10)) = median(g_el)  <=>  r = median(S) + 10 log10(median(g_el))
+            r = float(np.median(sn[ok]) + 10.0 * np.log10(np.median(g_el[ok])))
+        gs.append(np.clip(10.0 ** ((r - sn) / 10.0), 1.0, gmax))
+    g = (alpha1 ** 2 * gs[0] + alpha2 ** 2 * gs[1]) / (alpha1 ** 2 + alpha2 ** 2)
+    return np.where(np.isfinite(g), g, g_el)
+
+
+def _gb(obs, k, j):
+    return None if obs.var_b is None else obs.var_b[k, j]
 
 
 def _igg3(vbar):
@@ -204,7 +241,7 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
                 v = obs.Pif[k, j] - (comp + h_common @ x_pred)
                 rows_H.append(h_common)
                 rows_v.append(v)
-                rows_R.append(_sigma2(obs.el[k, j], sc))
+                rows_R.append(_sigma2(obs.el[k, j], sc, _gb(obs, k, j)))
                 rows_info.append((j, 0, a))
             hp = h_common.copy()
             ai = kidx.get(f"AMB[{a}]")
@@ -214,7 +251,7 @@ def _forward(obs, arcs, cfg, edit, k0, k1, store):
             v = obs.Lif[k, j] - (comp + obs.wind[k, j] + hp @ x_pred)
             rows_H.append(hp)
             rows_v.append(v)
-            rows_R.append(_sigma2(obs.el[k, j], sp))
+            rows_R.append(_sigma2(obs.el[k, j], sp, _gb(obs, k, j)))
             rows_info.append((j, 1, a))
         # single-difference ambiguity pseudo-observations (fixed solution, TDS § 15.6): applied once, at the
         # first epoch at which both ambiguities are in the state
@@ -443,8 +480,10 @@ def residuals(obs, cfg, sol):
 
 def _edit_residuals(obs, arcs, cfg, sol, edit, counts):
     rc, rp = residuals(obs, cfg, sol)
-    sp = np.sqrt(_sigma2(obs.el, (settings.SIGMA_PHASE_AB_M[0] * obs.f_if, settings.SIGMA_PHASE_AB_M[1] * obs.f_if)))
-    sc = np.sqrt(_sigma2(obs.el, (settings.SIGMA_CODE_AB_M[0] * obs.f_if, settings.SIGMA_CODE_AB_M[1] * obs.f_if)))
+    sp = np.sqrt(_sigma2(obs.el, (settings.SIGMA_PHASE_AB_M[0] * obs.f_if, settings.SIGMA_PHASE_AB_M[1] * obs.f_if),
+                         obs.var_b))
+    sc = np.sqrt(_sigma2(obs.el, (settings.SIGMA_CODE_AB_M[0] * obs.f_if, settings.SIGMA_CODE_AB_M[1] * obs.f_if),
+                         obs.var_b))
     zp = rp / sp
     zc = rc / sc
     fp = np.isfinite(zp)

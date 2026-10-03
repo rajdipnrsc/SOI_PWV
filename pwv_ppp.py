@@ -834,6 +834,9 @@ def build_obsset(ctx, X0):
     obs = est.ObsSet(epochs=epochs, t_s=(epochs - epochs[0]) / ts.NS, sats=ctx["sel"].sats, Pif=ctx["Pif"],
                      Lif=ctx["Lif"], rho=m.rho, dts=m.dts, wind=lam_nl * m.windup, el=m.el, az=m.az, los=m.los, mh=mh,
                      mw=mw, mg=mg, zhd0=zhd0, zwd0=zwd0, usable=usable, f_if=f_if, X0=np.asarray(X0, dtype=float))
+    if settings.SNR_WEIGHTING:
+        obs.var_b = est.snr_var_factor(m.el, ctx["sel"].S1, ctx["sel"].S2, ctx["a1"], ctx["a2"],
+                                       settings.SNR_WEIGHT_REF_DBHZ)
     return obs, m
 
 

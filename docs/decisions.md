@@ -58,9 +58,16 @@ labelled `PRODUCTS_OVERRIDE`/`TEST_BROADCAST` and are never products.
 The 0.25° national grid uses cell centres at multiples of 0.25° (ERA5-coincident, TDS § 27.1 option) so that the
 ERA5 background is sampled exactly at cell centres.
 
-**D-011 (2026-09-27) — Optional SNR-based weighting not implemented.**
-TDS § 5.4 lists SNR weighting as an option, off by default. Only the optional SNR *mask* (§ 13.9, `SNR_MASK`) is
-implemented; SNR weighting can be added in `estimator._sigma2` if Level-3 tests show a benefit.
+**D-011 (2026-09-27, revised 2026-10-03) — Optional SNR-based weighting (off by default).**
+TDS § 5.4 lists the SNR model σ² ∝ 10^(−SNR/10) (Hartinger & Brunner 1999) as an option, off by default.
+`settings.SNR_WEIGHTING = True` replaces the 1/sin²e factor of σ_b² by 10^((SNR_ref − SNR)/10) per frequency,
+IF-combined with α₁², α₂² (`estimator.snr_var_factor`). Because receivers report SNR on different scales (on the HYDE
+sample, S2W spans 17–54 dB-Hz with median 38 dB-Hz versus S1C median 44 dB-Hz), SNR_ref is by default set per
+frequency and station-day so that the median factor equals the median 1/sin²e of the same observations, and factors
+are clipped to [1, 1/sin²5°]; a fixed SNR_ref (`SNR_WEIGHT_REF_DBHZ`) can be configured. With the broadcast test
+harness (D-009) the option changed ZTD by 9 ± 16 mm on HYDE 2024-015 — a sensitivity dominated by broadcast
+orbit/clock errors, not evidence for either model. It stays off until the Level-3 weighting experiment with CODE
+products. The optional SNR *mask* (§ 13.9, `SNR_MASK`) is unchanged.
 
 **D-012 (2026-09-27) — Output naming and immutability.**
 Files use the Revision-1.1 names of § 33.5 (`<ST>_<YYYYDDD>_ZTD.csv`, ...). To keep outputs immutable (§ 19.3), a

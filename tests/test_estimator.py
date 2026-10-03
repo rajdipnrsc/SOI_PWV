@@ -77,3 +77,29 @@ def test_forward_screening_rejects_phase_outlier():
     sol = est.solve(obs, copy.deepcopy(arcs), est.EstConfig(mode="fixed"), max_passes=0)
     assert sol.rejected[k, j]                                # caught by IGG-III in the forward pass
     assert sol.rejected.sum() < 0.002 * obs.usable.sum()      # and almost nothing else
+
+
+def test_snr_variance_factor():
+    """SNR model (TDS § 5.4): 10^((ref - SNR)/10) per frequency, IF-combined; elevation model where SNR is missing."""
+    a1, a2 = 2.546, -1.546
+    el = np.radians(np.array([[90.0, 30.0, 30.0]]))
+    s1 = np.array([[45.0, 35.0, np.nan]])
+    s2 = np.array([[45.0, 35.0, 40.0]])
+    g = est.snr_var_factor(el, s1, s2, a1, a2, ref=45.0)
+    assert g[0, 0] == np.float64(1.0)                       # reference SNR = zenith elevation model
+    assert g[0, 1] == np.float64(10.0) or abs(g[0, 1] - 10.0) < 1e-12
+    assert abs(g[0, 2] - 4.0) < 1e-12                       # 1/sin^2(30 deg)
+    assert est._sigma2(el[0, 1], (1.0, 2.0), g[0, 1]) == 1.0 + 4.0 * g[0, 1]
+
+
+def test_snr_weighting_runs_on_synthetic():
+    """With an SNR model equivalent to the elevation model, the solution is unchanged (same weights)."""
+    obs, arcs, truth = synth.make_obs(ne=720)
+    sol0 = est.solve(copy.deepcopy(obs), copy.deepcopy(arcs), est.EstConfig(mode="fixed"), max_passes=0)
+    # SNR chosen so that 10^((45 - S)/10) = 1/sin^2(e) on both frequencies
+    s = 45.0 + 20.0 * np.log10(np.sin(np.maximum(obs.el, np.radians(1.0))))
+    obs.var_b = est.snr_var_factor(obs.el, s, s, 2.546, -1.546)
+    sol1 = est.solve(obs, copy.deepcopy(arcs), est.EstConfig(mode="fixed"), max_passes=0)
+    z0, _, _ = est.state_series(sol0, "ZWD")
+    z1, _, _ = est.state_series(sol1, "ZWD")
+    assert np.nanmax(np.abs(z0 - z1)) < 1e-9
