@@ -284,8 +284,21 @@ PWV_CONSTANTS = {  # Bevis et al. (1994) [F]
     "RUEGER2002": {"rho_w": 1000.0, "R_v": 461.51, "k2p": 0.2295, "k3": 3754.63},
 }
 PWV_CONSTANTS_SET = "BEVIS1994"
-SIGMA_P_HPA = {"BAROMETER": 0.3, "ERA5": 1.0, "NWP": 1.5, "VMF3_GRID": 1.0, "GPT3": 5.0}
+SIGMA_P_HPA = {"BAROMETER": 0.3, "ERA5": 1.0, "NWP": 1.5, "VMF3_GRID": 1.0, "GPT3": 5.0,
+               "STANDARD_ATMOSPHERE": 10.0}
 SIGMA_TM_K = {"ERA5": 2.0, "GPT3": 4.0, "BEVIS": 5.0}
+# Station meteorology (RINEX met file next to SITE.o, found automatically; no extra CLI input, TDS § 33.3)
+MET_FILE_PATTERNS = ["{st}{doy:03d}?.{yy:02d}[mM]", "{st}{doy:03d}?.{yy:02d}[mM].*", "{stl}{doy:03d}?.{yy:02d}[mM]*",
+                     "{st}*_{y:04d}{doy:03d}0000_01D_*MM.rnx*"]
+MET_P_RANGE_HPA = (500.0, 1100.0)    # plausible station pressure in India (sites below ~5.5 km) [A]
+MET_SPIKE_HPA = 2.0                  # |P - 5-sample running median| rejection limit [A]
+MET_MAX_GAP_S = 1800.0               # longer barometer gaps are filled from the next P source (flagged) [A]
+MET_MAX_HEIGHT_DIFF_M = 200.0        # sensor-ARP height difference above which the barometer is not used [A]
+MET_MAX_BIAS_HPA = 6.0               # |median(P_baro - P_reference)| above which the barometer is rejected [A]
+# ERA5 for station PWV (TDS § 18.2: P priority 2, Tm priority 1). Used when cache/ERA5/era5_pl_<YYYYDDD>.nc exists
+# (e.g. written by pwv_map.py); downloaded by the station run only if enabled (CDS queues can take hours, D-014).
+STATION_ERA5 = True
+STATION_ERA5_DOWNLOAD = False
 S_ZTD_SCALE = 1.0                    # formal-error scale factor (to be derived, O14)
 RD_DRY = 287.05                      # J/kg/K
 G0 = 9.80665                         # m/s^2

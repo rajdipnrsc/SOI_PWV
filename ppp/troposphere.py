@@ -357,6 +357,7 @@ class StationTropo:
     flags: set = field(default_factory=set)
     files: list = field(default_factory=list)
     met: dict = field(default_factory=dict)   # GPT3 p, T, e, Tm, la, undu at window midpoint
+    zhd_source_fallback: str = ""  # source used inside barometer gaps (when zhd_source == BAROMETER)
 
     def at(self, t_ns):
         tq = np.asarray(t_ns, dtype=float)
@@ -438,10 +439,33 @@ def build_station_tropo(lat, lon, h_ell, win_start, win_end, vmf3_files=None, or
 
 
 def _apply_barometer(st, baro):
-    """Replace ZHD0 by Saastamoinen with barometer pressure reduced to the ARP (priority 1, TDS § 6.2)."""
+    """Replace ZHD0 by Saastamoinen with barometer pressure reduced to the ARP (priority 1, TDS § 6.2).
+
+    baro = (t_ns, p_ant_hpa, h_orth_m); p_ant may contain NaN (gaps), where the previous source is kept.  The time
+    grid becomes the union of the original grid and the barometer epochs, so the barometer resolution is kept."""
     t_ns, p_ant, h_orth = baro
-    z = saastamoinen_zhd(p_ant, st.lat, h_orth)
-    st.zhd = np.interp(st.t_ns.astype(float), np.asarray(t_ns, dtype=float), z)
+    t_b = np.asarray(t_ns, dtype=np.int64)
+    p_b = np.asarray(p_ant, dtype=float)
+    ok = np.isfinite(p_b)
+    if ok.sum() < 2:
+        return st
+    t_new = np.union1d(st.t_ns, t_b)
+    z_old, zw, ah, aw = st.at(t_new)
+    z_b = saastamoinen_zhd(np.interp(t_new.astype(float), t_b[ok].astype(float), p_b[ok]), st.lat, h_orth)
+    # barometer valid at t_new: an exact valid sample, or between two valid samples (gaps keep the previous source)
+    k = np.clip(np.searchsorted(t_b, t_new), 0, len(t_b) - 1)
+    exact = t_b[k] == t_new
+    km1 = np.clip(k - 1, 0, len(t_b) - 1)
+    inside = (t_new >= t_b[0]) & (t_new <= t_b[-1])
+    use = np.where(exact, ok[k], inside & ok[k] & ok[km1])
+    st.zhd_source_fallback = st.zhd_source
+    st.t_ns, st.zhd, st.zwd, st.ah, st.aw = t_new, np.where(use, z_b, z_old), zw, ah, aw
     st.zhd_source = "BAROMETER"
-    st.flags.discard("ZHD_CLIMATOLOGY")
+    if use.all():
+        st.flags.discard("ZHD_CLIMATOLOGY")
     return st
+
+
+def apply_barometer(st, t_ns, p_ant_hpa, h_orth_m):
+    """Public wrapper: station barometer (already reduced to the ARP) as a priori ZHD source."""
+    return _apply_barometer(st, (t_ns, p_ant_hpa, h_orth_m))

@@ -50,6 +50,11 @@ data, or no CODE orbit/clock: status `WAIT_FOR_TIER`, exit 2, or `FAIL`, exit 3)
 centre-of-mass correction once per station at http://holt.oso.chalmers.se/loading/ and save it as
 `blq/<STATION>.blq`; without it the run continues with the `NO_OTL` flag.
 
+**Station meteorology (optional, automatic):** a RINEX meteorological file of the same station and day placed next
+to `SITE.o` (`HYDE015A.24m` or `*_MM.rnx`) is detected and used as priority-1 pressure (reduced to the antenna
+height, QC'd against VMF3/GPT3, docs/decisions.md D-014). An ERA5 file in `cache/ERA5/` (written by `pwv_map.py`)
+supplies pressure in barometer gaps and T_m. The source of each 5-min value is in the `P_source`/`Tm_source` columns.
+
 ### Outputs (in `--out`)
 
 `<ST>_<YYYYDDD>_ZTD.csv`, `_ZTD.nc` (CF-1.10/ACDD-1.3), `_PWV.csv`, `.tro` (SINEX_TRO, optional format),

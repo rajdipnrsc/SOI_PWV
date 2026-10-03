@@ -68,3 +68,39 @@ def test_read_sample_files():
     assert len(nav) >= 28
     first, last = rinex.first_last_epoch(os.path.join(SAMPLE, "HYDE015.24o"))
     assert first == ts.to_ns(2024, 1, 15) and last == ts.to_ns(2024, 1, 15, 23, 59, 30)
+
+
+MET211 = """     2.11           METEOROLOGICAL DATA                     RINEX VERSION / TYPE
+TEST                                                        MARKER NAME
+     3    PR    TD    HR                                    # / TYPES OF OBSERV
+PAROSCIENTIFIC      MET4A                         0.1    PR SENSOR MOD/TYPE/ACC
+  1229786.0000  5998193.0000  1932154.0000      502.0000 PR SENSOR POS XYZ/H
+                                                            END OF HEADER
+ 24  1 15  0  0  0  955.3   18.2   61.0
+ 24  1 15  0  5  0  955.4         60.5
+ 24  1 15  0 10  0-999.9   18.4   60.0
+"""
+
+MET3 = """     3.05           METEOROLOGICAL DATA                     RINEX VERSION / TYPE
+     2    PR    TD                                          # / TYPES OF OBSERV
+                                                            END OF HEADER
+ 2024 07 15 12 00 00  950.0   30.1
+ 2024 07 15 12 01 00  950.1   30.2
+"""
+
+
+def test_read_met(tmp_path):
+    p = tmp_path / "TEST015A.24m"
+    p.write_text(MET211)
+    m = rinex.read_met(str(p))
+    assert m.values["PR"][:2] == pytest.approx([955.3, 955.4])
+    assert np.isnan(m.values["PR"][2])               # -999.9 = missing
+    assert np.isnan(m.values["TD"][1])               # blank = missing
+    assert m.values["HR"][2] == pytest.approx(60.0)
+    assert m.sensor_pos["PR"][3] == pytest.approx(502.0)
+    assert np.diff(m.t).tolist() == [300 * 10 ** 9] * 2
+    p3 = tmp_path / "TEST00XXX_R_20241970000_01D_01M_MM.rnx"
+    p3.write_text(MET3)
+    m3 = rinex.read_met(str(p3))
+    assert m3.values["TD"] == pytest.approx([30.1, 30.2])
+    assert m3.t[0] == ts.to_ns(2024, 7, 15, 12)

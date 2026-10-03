@@ -71,3 +71,16 @@ manifest records `supersedes`, the archived one `superseded_by`.
 The a priori receiver clock used for t_rx = epoch − dt_r comes from a code single-point solution and is then refined
 per epoch from the code residual median (≤ 3 iterations, until the change is < 1 µs), so that receivers with
 millisecond clock jumps or free-running clocks get correct reception times (TDS § 7.1).
+
+**D-014 (2026-10-03) — Station meteorology without new inputs.**
+TDS § 18.2 puts a calibrated station barometer first, but rule 3 forbids required inputs beyond `SITE.o SITE.n`.
+A RINEX meteorological file of the same station/day (`SITE.yym`, `*_MM.rnx`, D−1/D+1 included) in the folder of
+`SITE.o` is therefore detected automatically (`settings.MET_FILE_PATTERNS`). Pressure is QC'd (plausible range,
+2 hPa spike test), reduced hypsometrically from the sensor height (`SENSOR POS XYZ/H`, ellipsoidal → orthometric
+with the GPT3 undulation; missing → sensor assumed at the ARP with `MET_HEIGHT_ASSUMED`) to the ARP, and compared
+with the a priori pressure (VMF3: |median Δ| ≤ 6 hPa, GPT3: ≤ 12 hPa); a failing barometer is not used
+(`BAROMETER_REJECTED`). The barometer replaces the a priori ZHD and supplies P_ant for PWV; gaps > 30 min fall back
+to the next source with the source recorded per 5-min row (`P_source`) and flag `BAROMETER_GAPS`. ERA5 (P priority 2,
+T_m priority 1) is used for station PWV when `cache/ERA5/era5_pl_<YYYYDDD>.nc` exists (e.g. written by `pwv_map.py`);
+the station run downloads it only when `STATION_ERA5_DOWNLOAD = True`, because CDS requests can queue for hours and
+would block routine station processing. Without either, VMF3-derived pressure and GPT3 T_m are used, as before.

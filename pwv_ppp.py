@@ -110,6 +110,83 @@ def find_adjacent(path, station, day_ns):
     return out_
 
 
+def find_met(path, station, day_ns):
+    """RINEX meteorological files of the station for D-1, D, D+1 in the folder of SITE.o (TDS § 18.2 priority 1)."""
+    d = os.path.dirname(os.path.abspath(path))
+    hits = []
+    for off in (-1, 0, 1):
+        y, doy = ts.year_doy(day_ns + off * ts.DAY_NS)
+        for pat in settings.MET_FILE_PATTERNS:
+            g = sorted(glob.glob(os.path.join(d, pat.format(st=station[:4].upper(), stl=station[:4].lower(), y=y,
+                                                            yy=y % 100, doy=doy))))
+            if g:
+                hits.append(g[0])
+                break
+    return hits
+
+
+def load_barometer(obs_path, station, day, h_ant_orth, undu, t_fallback_k):
+    """Station barometer reduced to the ARP from auto-detected RINEX met files; None (with WARNING) if unusable."""
+    files = find_met(obs_path, station, day)
+    if not files:
+        return None, []
+    mets = []
+    for f in files:
+        try:
+            mets.append(rinex.read_met(f))
+        except (rinex.RinexError, OSError, ValueError) as exc:
+            LOG.warning("MET_UNREADABLE: %s: %s", os.path.basename(f), exc)
+    if not mets:
+        return None, []
+    met = mets[0]
+    if len(mets) > 1:
+        tt = np.concatenate([m.t for m in mets])
+        keys = set.intersection(*(set(m.values) for m in mets))
+        vals = {k: np.concatenate([m.values[k] for m in mets]) for k in keys}
+        o = np.unique(tt, return_index=True)[1]
+        met = rinex.MetData(tt[o], {k: v[o] for k, v in vals.items()}, mets[0].sensor_pos, mets[0].sensor_info,
+                            mets[0].version, mets[0].path)
+    baro, warns = pw.barometer_from_met(met, h_ant_orth, undu, t_fallback_k)
+    for w in warns:
+        LOG.warning("%s: station met file %s (%s)", w, os.path.basename(met.path), {
+            "MET_NO_PRESSURE": "no PR observable", "MET_NO_VALID_PRESSURE": "no plausible pressure values",
+            "MET_HEIGHT_ASSUMED": "no SENSOR POS XYZ/H for PR: sensor assumed at antenna height (§ 9.11 style "
+                                  "default)", "MET_HEIGHT_NO_GEOID": "no geoid undulation: sensor height used as "
+                                                                    "orthometric",
+            "MET_SENSOR_TOO_FAR": f"sensor more than {settings.MET_MAX_HEIGHT_DIFF_M:.0f} m from the antenna height; "
+                                  "barometer not used",
+            "MET_NO_TEMPERATURE": "no TD observable: height reduction with GPT3/standard temperature"}.get(w, ""))
+    if baro is not None:
+        LOG.info("Station barometer: %s, %d values (%d rejected), sensor H %.1f m (%s) -> ARP H %.1f m",
+                 baro.info, len(baro.t), baro.n_rejected, baro.h_sensor, baro.height_source, baro.h_ant)
+    return baro, [os.path.basename(f) for f in files] + warns
+
+
+def era5_for_day(day):
+    """ERA5 pressure-level file for the UTC day from the cache (or CDS when enabled); None if unavailable."""
+    if not settings.STATION_ERA5:
+        return None
+    y, doy = ts.year_doy(day)
+    cand = os.path.join(settings.CACHE_DIR, "ERA5", f"era5_pl_{y:04d}{doy:03d}.nc")
+    if not os.path.exists(cand) and settings.STATION_ERA5_DOWNLOAD and os.path.exists(os.path.expanduser(
+            "~/.cdsapirc")):
+        try:
+            from ppp import mapping as mp
+            os.makedirs(os.path.dirname(cand), exist_ok=True)
+            LOG.info("Downloading ERA5 for station PWV (Copernicus CDS; may queue)")
+            mp.download_era5(day, cand)
+        except Exception as exc:              # noqa: BLE001 - optional source; fall back and say so
+            LOG.warning("ERA5_UNAVAILABLE: %s", exc)
+    if not os.path.exists(cand):
+        return None
+    try:
+        from ppp import mapping as mp
+        return mp.read_era5(cand)
+    except Exception as exc:                  # noqa: BLE001
+        LOG.warning("ERA5_UNREADABLE: %s: %s", os.path.basename(cand), exc)
+        return None
+
+
 def merge_obs(parts, t0, t1):
     """Merge RINEX ObsData objects restricted to [t0, t1] GPST (window with overlap)."""
     sats = sorted({s for p in parts for s in p.sats})
@@ -370,6 +447,30 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     X_ap = coord_soi.xyz if coord_soi is not None else X_spp
     lat, lon, h = co.ecef_to_geodetic(X_ap)
     tropo = tr.build_station_tropo(lat, lon, h, win0, win1, vmf_files, oro, gpt3_grid)
+    h_orth_ap = h - (undu if undu is not None else 0.0)
+    t_fb = tropo.met.get("T") + 273.15 if tropo.met.get("T") is not None else None
+    baro, met_info = load_barometer(args.obs, station, day, h_orth_ap, undu, t_fb)
+    if met_info:
+        manifest_extra["met_files"] = met_info
+    if baro is not None:
+        grid5 = np.arange(win0 - win0 % (300 * ts.NS), win1 + 300 * ts.NS, 300 * ts.NS, dtype=np.int64)
+        p5 = pw.pressure_at(baro, grid5)
+        p_ref = tr.saastamoinen_pressure(tropo.at(grid5)[0], lat, h_orth_ap)
+        bias = float(np.nanmedian(p5 - p_ref)) if np.isfinite(p5).any() else np.nan
+        lim = settings.MET_MAX_BIAS_HPA * (1 if tropo.zhd_source == "VMF3_GRID" else 2)
+        if not np.isfinite(bias) or abs(bias) > lim:
+            LOG.warning("BAROMETER_REJECTED: median barometer - %s pressure = %.1f hPa (limit %.0f hPa): wrong "
+                        "calibration or sensor height suspected; barometer not used", tropo.zhd_source, bias, lim)
+            warnings_flags.add("BAROMETER_REJECTED")
+            baro = None
+        else:
+            LOG.info("Barometer vs %s pressure: median difference %.2f hPa; barometer used for ZHD (priority 1)",
+                     tropo.zhd_source, bias)
+            tropo = tr.apply_barometer(tropo, grid5, p5, h_orth_ap)
+            if np.isnan(p5[(grid5 >= first) & (grid5 <= last)]).any():
+                warnings_flags.add("BAROMETER_GAPS")
+                LOG.warning("BAROMETER_GAPS: barometer gaps > %.0f min filled from %s", settings.MET_MAX_GAP_S / 60,
+                            tropo.zhd_source_fallback)
     warnings_flags |= tropo.flags
     LOG.info("Troposphere a priori: ZHD source %s, mapping function %s", tropo.zhd_source, tropo.mapping_function)
     blq = None
@@ -542,13 +643,14 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     written = [ztd_csv]
     pw_res = None
     if not args.no_pwv:
-        pw_res, pw_meta = compute_pwv(fm, tropo, coord_final, final_mode, ant_status)
+        pw_res, pw_meta = compute_pwv(fm, tropo, coord_final, final_mode, ant_status, baro, era5_for_day(day))
         prow = []
         for r, i in zip(rows, range(len(rows))):
             rr = dict(r)
             rr.update({"PWV": pw_res.pwv[i], "sigma_PWV_ppp": pw_res.sig_ppp[i], "sigma_PWV_conv": pw_res.sig_conv[i],
                        "sigma_PWV_total": pw_res.sig_total[i], "P_ant": float(pw_res.p_ant[i]),
-                       "P_source": pw_res.p_source, "T_m": float(pw_res.tm[i]), "Tm_source": pw_res.tm_source,
+                       "P_source": pw_res.p_source[i], "T_m": float(pw_res.tm[i]),
+                       "Tm_source": pw_res.tm_source[i],
                        "Pi": float(pw_res.pi[i]), "ZHD_met": pw_res.zhd_met[i], "ZWD_met": pw_res.zwd_met[i],
                        "H_ant": coord_final.h_orth, "constants_set": pw_res.constants_set})
             prow.append(rr)
@@ -606,9 +708,10 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
                   "receiver_calibration": ant_status, "clock_header_antex": ps.antex_name},
         "blq": {"file": blq_path if blq is not None else None, "model": "user-supplied BLQ (FES2014b+CMC requested)",
                 "sha256": prd.sha256(blq_path) if blq is not None else None},
-        "vmf3_files": tropo.files if tropo.zhd_source == "VMF3_GRID" else [],
+        "vmf3_files": tropo.files if "VMF3_GRID" in (tropo.zhd_source, tropo.zhd_source_fallback) else [],
         "troposphere": {"zhd_source": tropo.zhd_source, "mapping_function": tropo.mapping_function,
-                        "gpt3": tropo.files if tropo.zhd_source == "GPT3" else []},
+                        "gpt3": tropo.files if "GPT3" in (tropo.zhd_source, tropo.zhd_source_fallback) else [],
+                        "zhd_source_in_gaps": tropo.zhd_source_fallback},
         "leap_seconds": leap, "processing_mode": "FLOAT", "status": ps.status, "reason": ps.reason,
         "fallbacks": ps.fallbacks, "missing": ps.missing, "flags": sorted(warnings_flags),
         "coordinate_object_id": coord_final.id, "coordinate_object": coord_final.as_dict(),
@@ -794,28 +897,59 @@ def run_ar_layer(ps, sel, final, final_mode, fm_float, arcs, day_utc0, gflags, e
     return out_
 
 
-def compute_pwv(fm, tropo, coord, mode, ant_status):
-    """Station PWV (TDS § 18): pressure from the a priori ZHD source reduced to the ARP; Tm from GPT3."""
+def compute_pwv(fm, tropo, coord, mode, ant_status, baro=None, bg=None):
+    """Station PWV (TDS § 18) with the § 18.2 source priority, chosen per 5-min epoch.
+
+    P_ant: station barometer (reduced to the final ARP height) > ERA5 profile > a priori ZHD source (VMF3 grid,
+    GPT3 climatology).  Tm: ERA5 profile integration > GPT3 > Bevis Tm-Ts with the station/GPT3 temperature."""
     lat = np.radians(coord.lat)
     h_orth = coord.h_orth
-    zhd = fm.zhd0
-    p = tr.saastamoinen_pressure(zhd, lat, h_orth)
-    p_src = {"VMF3_GRID": "VMF3_GRID", "GPT3": "GPT3", "BAROMETER": "BAROMETER"}.get(tropo.zhd_source, "GPT3")
-    if tropo.met.get("Tm"):
-        tm, tm_src = tropo.met["Tm"], "GPT3"
-    elif tropo.met.get("T") is not None:
-        tm, tm_src = 70.2 + 0.72 * (tropo.met["T"] + 273.15), "BEVIS"
-    else:
-        tm, tm_src = 70.2 + 0.72 * 288.15, "BEVIS"
-        LOG.warning("TM_DEFAULT: no GPT3 grid; Bevis Tm with standard temperature")
-    LOG.info("PWV conversion: P from %s (reduced to ARP, H = %.1f m), Tm %s (%.1f K)", p_src, h_orth, tm_src, tm)
-    if p_src == "GPT3":
-        LOG.warning("P_CLIMATOLOGY: PWV uses GPT3 climatological pressure (not acceptable for research PWV)")
+    n = len(fm.zwd)
+    grid_src = tropo.zhd_source_fallback if tropo.zhd_source == "BAROMETER" else tropo.zhd_source
+    grid_src = {"VMF3_GRID": "VMF3_GRID", "GPT3": "GPT3"}.get(grid_src, grid_src)
+    p = tr.saastamoinen_pressure(fm.zhd0, lat, h_orth)
+    p_src = np.full(n, grid_src, dtype=object)
+    tm = np.full(n, np.nan)
+    tm_src = np.full(n, "", dtype=object)
+    if bg is not None:
+        p_e, tm_e = pw.era5_station_met(bg, coord.lat, coord.lon, h_orth, fm.t_utc)
+        okp = np.isfinite(p_e)
+        p[okp], p_src[okp] = p_e[okp], "ERA5"
+        okt = np.isfinite(tm_e)
+        tm[okt], tm_src[okt] = tm_e[okt], "ERA5"
+        if not okp.all():
+            LOG.warning("ERA5_PARTIAL: ERA5 covers %d of %d epochs", int(okp.sum()), n)
+    if baro is not None:
+        p_b = pw.pressure_at(baro, fm.t_gpst)
+        if abs(h_orth - baro.h_ant) > 0.01:                # a priori -> final antenna height
+            tv = np.interp(fm.t_gpst.astype(float), baro.t.astype(float), baro.t_surface_k)
+            p_b = pw.reduce_pressure(p_b, baro.h_ant, h_orth, tv)
+        okb = np.isfinite(p_b)
+        p[okb], p_src[okb] = p_b[okb], "BAROMETER"
+    need = ~np.isfinite(tm)
+    if need.any():
+        if tropo.met.get("Tm"):
+            tm[need], tm_src[need] = tropo.met["Tm"], "GPT3"
+        else:
+            if baro is not None and baro.t_surface_k is not None:
+                ts_k = np.interp(fm.t_gpst.astype(float), baro.t.astype(float), baro.t_surface_k)
+            elif tropo.met.get("T") is not None:
+                ts_k = np.full(n, tropo.met["T"] + 273.15)
+            else:
+                ts_k = np.full(n, 288.15)
+                LOG.warning("TM_DEFAULT: no ERA5/GPT3/station temperature; Bevis Tm with standard temperature")
+            tm[need], tm_src[need] = 70.2 + 0.72 * ts_k[need], "BEVIS"
+    srcs = {str(k): int(v) for k, v in zip(*np.unique(p_src.astype(str), return_counts=True))}
+    tms = {str(k): int(v) for k, v in zip(*np.unique(tm_src.astype(str), return_counts=True))}
+    LOG.info("PWV conversion: P %s (at ARP, H = %.1f m), Tm %s (median %.1f K)", srcs, h_orth, tms, np.median(tm))
+    if np.any(p_src == "GPT3"):
+        LOG.warning("P_CLIMATOLOGY: PWV uses GPT3 climatological pressure for %d epochs (not acceptable for research "
+                    "PWV)", int(np.sum(p_src == "GPT3")))
     s_coord = settings.HEIGHT_ZTD_COUPLING_BETA * np.sqrt(coord.covariance[2][2]) if mode != "static_estimated" else 0.0
     if ant_status == "RADOME_FALLBACK":
         s_coord = np.hypot(s_coord, settings.RADOME_FALLBACK_ZTD_SIGMA_M)
-    res = pw.convert(fm.zhd0 + fm.zwd, fm.sig, lat, h_orth, p, p_src, np.full(len(fm.zwd), tm), tm_src, s_coord)
-    return res, f"P {p_src}, Tm {tm_src}, constants {res.constants_set}"
+    res = pw.convert(fm.zhd0 + fm.zwd, fm.sig, lat, h_orth, p, p_src, tm, tm_src, s_coord)
+    return res, f"P {'+'.join(srcs)}, Tm {'+'.join(tms)}, constants {res.constants_set}"
 
 
 def main(argv=None):

@@ -349,3 +349,77 @@ def read_nav(path):
     for prn in out:
         out[prn].sort(key=lambda e: e.toe)
     return out
+
+
+# ============================================================================ meteorological
+@dataclass
+class MetData:
+    """RINEX meteorological file (types PR hPa, TD degC, HR %, ...); epochs in GPST ns (RINEX met: GPS time)."""
+    t: np.ndarray
+    values: dict                    # type -> (n,) float, NaN where missing
+    sensor_pos: dict = field(default_factory=dict)    # type -> (X, Y, Z, H_ell) (any may be 0 = unknown)
+    sensor_info: dict = field(default_factory=dict)   # type -> "model / type / accuracy"
+    version: float = 2.11
+    path: str = ""
+
+
+def read_met(path):
+    """Read a RINEX 2.11 / 3.x / 4.x meteorological file (TDS § 18.2 priority 1: station barometer).
+
+    Data records: epoch (2- or 4-digit year) followed by F7.1 values in the order of '# / TYPES OF OBSERV'
+    (continuation lines start with 4 blanks).  Blank or -999.9/9999.9 values are missing."""
+    lines = _read_text(path).splitlines()
+    types, pos, info = [], {}, {}
+    ver = 2.11
+    k = 0
+    for k, ln in enumerate(lines):
+        lab = ln[60:80].strip()
+        if lab == "RINEX VERSION / TYPE":
+            ver = _f(ln[:9], 2.11)
+            if "M" not in ln[20:21] and "METEOROLOGICAL" not in ln.upper():
+                raise RinexError(f"{os.path.basename(path)} is not a RINEX meteorological file")
+        elif lab == "# / TYPES OF OBSERV":
+            if ln[:6].strip():
+                types = []
+            types += ln[6:60].split()
+        elif lab == "SENSOR MOD/TYPE/ACC":
+            info[ln[57:59].strip()] = f"{ln[:20].strip()} / {ln[20:40].strip()} / {ln[46:53].strip()}"
+        elif lab == "SENSOR POS XYZ/H":
+            pos[ln[57:59].strip()] = tuple(_f(ln[i:i + 14]) for i in (0, 14, 28, 42))
+        elif lab == "END OF HEADER":
+            break
+    if not types:
+        raise RinexError(f"{os.path.basename(path)}: no '# / TYPES OF OBSERV' in the met header")
+    t, rows = [], []
+    i = k + 1
+    while i < len(lines):
+        ln = lines[i]
+        i += 1
+        if not ln.strip():
+            continue
+        four = len(ln) > 5 and ln[1:5].strip().isdigit() and len(ln[1:5].strip()) == 4
+        w = 20 if four else 18
+        try:
+            parts = ln[:w].split()
+            y, mo, d, h, mi = (int(x) for x in parts[:5])
+            sec = float(parts[5])
+        except (ValueError, IndexError):
+            continue
+        if not four:
+            y += 2000 if y < 80 else 1900
+        body = ln[w:]
+        while len(body) // 7 < len(types) and i < len(lines) and lines[i][:4] == "    ":
+            body += lines[i][4:].ljust(70)
+            i += 1
+        vals = []
+        for j in range(len(types)):
+            s = body[7 * j:7 * j + 7].strip()
+            v = _f(s, np.nan) if s else np.nan
+            vals.append(np.nan if v <= -999 or v >= 9999 else v)
+        t.append(ts.to_ns(y, mo, d, h, mi, sec))
+        rows.append(vals)
+    if not rows:
+        raise RinexError(f"{os.path.basename(path)}: no meteorological records")
+    a = np.array(rows, dtype=float)
+    o = np.argsort(t)
+    return MetData(np.array(t, dtype=np.int64)[o], {ty: a[o, j] for j, ty in enumerate(types)}, pos, info, ver, path)
