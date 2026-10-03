@@ -137,6 +137,14 @@ for sd in (5, 8, 9):
     days += vis.sum() * 30 / 86400
 slip_txt = ", ".join(f"({a},{b}): {h}/{n}" for (a, b), (h, n) in tab.items())
 
+# full modelled range vs independent implementation
+from tests.test_model_decomposition import run_decomposition  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    mx, nobs = run_decomposition(d)
+add("Full modelled range, term by term", f"HYDE 2024-015 geometry, broadcast-node products, {nobs} sat-epochs; "
+    "independent test-only implementation (`tests/tools/independent_range.py`)", "< 1 mm per term, total < 2 mm",
+    ", ".join(f"{k} {v * 1e3:.3f} mm" for k, v in mx.items()),
+    all(v < (2e-3 if k == "total" else 1e-3) for k, v in mx.items()))
 git = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 L = ["# Level-0 component tests (TDS § 30.1) — measured results", "",
      f"Generated {datetime.date.today().isoformat()} by `validation/scripts/level0_report.py` at commit `{git}`. "
@@ -152,8 +160,8 @@ L += ["", "## Injected cycle slips (synthetic, § 30.4 method; real-data run sti
       "than ~5 cm and are not reliably detectable by any MW/GF detector at 30 s; the § 30.4 gate refers to "
       "MW-detectable slips.", "",
       "## Not yet covered at Level 0", "",
-      "* Full modelled-range decomposition against an independent implementation for one real station-day with CODE "
-      "products (requires CODE products; the term decomposition is stored by `ppp/model.py`).",
+      "* The modelled-range decomposition above uses broadcast-node products (CODE products were not reachable); "
+      "repeat it with one CODE station-day (same script) when products are available.",
       "* Satellite PCO/PCV against RTKLIB on real igs20 entries (the convention is verified with a synthetic "
       "asymmetric antenna, `tests/test_antenna.py`).",
       "* Pole tide: checked against the IERS formula re-implemented independently in the test (no official "

@@ -1,6 +1,6 @@
 # Level-0 component tests (TDS § 30.1) — measured results
 
-Generated 2026-09-27 by `validation/scripts/level0_report.py` at commit `7a6caa7`. All numbers are measured by this script; references are official IERS routine outputs (gfortran builds), RTKLIB 2.4.3 (compiled test-only), published test vectors, or analytic truth.
+Generated 2026-10-03 by `validation/scripts/level0_report.py` at commit `f78d3bb`. All numbers are measured by this script; references are official IERS routine outputs (gfortran builds), RTKLIB 2.4.3 (compiled test-only), published test vectors, or analytic truth.
 
 | Test | Dataset | Threshold | Measured | Result |
 |---|---|---|---|---|
@@ -13,6 +13,7 @@ Generated 2026-09-27 by `validation/scripts/level0_report.py` at commit `7a6caa7
 | Moon position (Meeus 47) | Meeus example 47.a | < 1e-5 deg | dlon 3.1e-07 deg | PASS |
 | Frame transformation (propagation-order equivalence) | HYDE SOI coordinate, 2005.0 -> 2024.5 | < 0.1 mm | 0.0e+00 mm | PASS |
 | Kalman/RTS numerics (synthetic truth) | 24 h, 12 satellites, ZWD RW 6 mm/sqrt(h) | z-STD 0.9-1.1 | z-STD 1.032, RMSE 2.11 mm, NIS/dof 0.830 | PASS |
+| Full modelled range, term by term | HYDE 2024-015 geometry, broadcast-node products, 244 sat-epochs; independent test-only implementation (`tests/tools/independent_range.py`) | < 1 mm per term, total < 2 mm | range_geometry 0.000 mm, sat_pcv 0.072 mm, rcv_antenna 0.006 mm, shapiro 0.000 mm, sat_clock 0.000 mm, relativity 0.004 mm, total 0.068 mm | PASS |
 
 ## Injected cycle slips (synthetic, § 30.4 method; real-data run still required)
 
@@ -24,6 +25,6 @@ False alarms on clean data: 8 in 20.2 satellite-days = 0.40 per satellite-day (g
 
 ## Not yet covered at Level 0
 
-* Full modelled-range decomposition against an independent implementation for one real station-day with CODE products (requires CODE products; the term decomposition is stored by `ppp/model.py`).
+* The modelled-range decomposition above uses broadcast-node products (CODE products were not reachable); repeat it with one CODE station-day (same script) when products are available.
 * Satellite PCO/PCV against RTKLIB on real igs20 entries (the convention is verified with a synthetic asymmetric antenna, `tests/test_antenna.py`).
 * Pole tide: checked against the IERS formula re-implemented independently in the test (no official routine output available).

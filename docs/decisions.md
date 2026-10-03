@@ -107,3 +107,9 @@ of § 24.2 (incremental benefit with block bootstrap) needs grid-specific point 
 NOT_EVALUATED until it is implemented with real data. (e) The hourly archive grid (§ 25) is a separate kriging run
 with [t − 30, t + 30) min windows (≥ 8 of 12 values); its RMS difference to the mean of the 15-min maps in the hour
 is logged and stored as a global attribute.
+
+**D-016 (2026-10-03) — Sun position at every epoch in the observation model.**
+`model.compute` interpolated the Sun from a 10-min subsample. The Level-0 term-by-term decomposition against an
+independent implementation showed up to 1.7 mm range error through the nominal yaw angle near noon/midnight turns
+(threshold 1 mm per term). The Sun is now computed at every epoch (≈ 40 ms per station-day); the decomposition
+maximum is 0.07 mm. Effect on the broadcast-harness HYDE 2024-015 ZTD: −0.3 ± 0.3 mm (max 1.4 mm).

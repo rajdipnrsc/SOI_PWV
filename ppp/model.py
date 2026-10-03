@@ -87,10 +87,9 @@ def compute(epochs, sats, X0, rclk_s, prod, atx, rcv_ant, disp, att_convention_c
     cint_ep = np.zeros(ne, dtype=bool)
     Xr = X0[None, :] + disp                                         # (ne,3)
     t_rx = epochs - np.round(np.asarray(rclk_s) * ts.NS).astype(np.int64)
-    sun, _ = cr.sun_moon_ecef(epochs[::20] if ne > 40 else epochs)
-    if ne > 40:
-        tt = epochs[::20].astype(float)
-        sun = np.stack([np.interp(epochs.astype(float), tt, sun[:, i]) for i in range(3)], axis=-1)
+    # Sun at every epoch: interpolating a 10-min subsample caused up to 1.7 mm range error through the nominal yaw
+    # near noon/midnight turns (Level-0 decomposition test); the full computation costs ~40 ms per day
+    sun, _ = cr.sun_moon_ecef(epochs)
     a1, a2 = an.if_coefficients("G", settings.BANDS["G"])
     lam_nl = C / (settings.FREQ[("G", "1")] + settings.FREQ[("G", "2")])
     # receiver epochs not aligned to clock epochs -> CLOCK_INTERP flag (TDS § 13.4)
