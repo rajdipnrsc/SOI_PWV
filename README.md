@@ -69,6 +69,10 @@ observations.*
 ```bash
 python pwv_map.py results --day 2024-197 --era5 era5_pl_2024197.nc --dem dem_india.nc --grid G025 --cv
 ```
+Options: `--hourly` (hourly archive grid), `--coarse` (0.5° variance-aware aggregate of the 0.25° grid),
+`--as-of DATE` (product selection for reproducibility), `--support FILE` (supportable-spacing map from the § 31
+experiment, `validation/scripts/spatial_experiment.py`). Station grey/blacklists (30-day residual history vs
+neighbours) are maintained automatically in the maps folder.
 ERA5/NWP background at station and cell height + GNSS residual regression kriging, σ and confidence classes, CF NetCDF
 `INPWV_{GRID}_{STEP}_{YYYYDDD}_{TIER}_v1.0.nc`. Without `--era5`, ERA5 is downloaded automatically if `cdsapi` is
 installed and a Copernicus key is in `~/.cdsapirc`; otherwise the benchmark height-normalised method is used and
@@ -98,6 +102,7 @@ ppp/settings.py     all defaults, thresholds, URLs, constants (with references)
 ppp/timesys.py rinex.py orbclk.py antenna.py products.py log.py         Stage 1
 ppp/coords.py corrections.py troposphere.py model.py                     Stage 2
 ppp/preprocess.py estimator.py output.py pwv.py ambiguity.py mapping.py  Stages 3-8
+ppp/spatial_validation.py  § 24/§ 31 experiment tools (LOSO, block CV, thinning, E(d), supportable spacing)
 ppp/data/           coefficient tables (VMF3 b/c, GMF, HARDISP 342 constituents, Meeus Moon)
 tests/              pytest suite (+ reference fixtures from official IERS routines and RTKLIB)
 network/            parallel run, reprocessing, daily cron and monitoring recipes (Stages 9-10)

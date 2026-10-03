@@ -325,6 +325,19 @@ MAP_SIGMA_BG_REPR_MM = 0.5
 MAP_DEFAULT_COV = {"sigma_s_mm": 2.0, "L_km": 150.0, "nugget_mm": 0.5}
 MAP_CLASS_RULES = {"c1": (25.0, 3, 300.0, 0.7), "c2": (50.0, 2, 0.4), "c3": (150.0, 0.1)}
 MAP_COASTAL_BUFFER_KM = 10.0
+MAP_LIST_DAYS = 30                   # station grey/blacklist: 30-day median residual vs neighbours [A, TDS § 21]
+MAP_LIST_RADIUS_KM = 150.0
+MAP_GREY_MM = 2.0
+MAP_BLACK_MM = 4.0
+# Supportable grid spacing (TDS § 24.2) - provisional thresholds, fixed after the § 31 experiment [A/E]
+SUPPORT_CANDIDATES_DEG = [0.5, 0.25, 0.125, 0.1]
+SUPPORT_K_D = 2.0                    # d_nn <= k_d * cell size
+SUPPORT_S_MIN = 0.2                  # skill over background at d_nn
+SUPPORT_E_TARGET_MM = 3.0            # E(cell/2) <= E_target (initial hypothesis [E])
+THINNING_SPACINGS_KM = [20, 30, 50, 75, 100, 150]
+THINNING_REALISATIONS = 10
+BLOCK_CV_KM = [100, 200]
+SUPPORT_FILE = os.path.join("validation", "stage8_spatial", "supportable_spacing.json")
 
 # ----------------------------------------------------------------------------------------------
 # Paths

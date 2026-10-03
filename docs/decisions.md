@@ -91,3 +91,19 @@ to the next source with the source recorded per 5-min row (`P_source`) and flag 
 T_m priority 1) is used for station PWV when `cache/ERA5/era5_pl_<YYYYDDD>.nc` exists (e.g. written by `pwv_map.py`);
 the station run downloads it only when `STATION_ERA5_DOWNLOAD = True`, because CDS requests can queue for hours and
 would block routine station processing. Without either, VMF3-derived pressure and GPT3 T_m are used, as before.
+
+**D-015 (2026-10-03) — System 2 ingestion lists, aggregation, support layer, validation module.**
+(a) The 30-day residual history for the station grey/blacklist (§ 21 item 2) is a plain CSV
+(`<maps>/station_residual_history.csv`, one row per station-day with the daily median of PWV_GNSS − PWV_bg from
+hourly slots); only days before the map day are used, ≥ 10 days are required; greylisted stations are reported and
+still used, blacklisted ones are excluded from the map, the REML pool and the CV. (b) The 0.5° coarse grid is an
+area-weighted aggregation of the 0.25° grid; because both grids have ERA5-coincident centres, edge cells of the
+0.25° grid count with weight ½. σ is aggregated with the fitted residual correlation exp(−d/L) between the fine
+cells (no √n reduction for correlated errors); the coarse class is the worst contributing class; class-4 coarse
+cells carry fill values. (c) `supportable_grid_spacing` is written to every grid; it is −1 (not determined) until
+the § 31 experiment has produced `validation/stage8_spatial/supportable_spacing.json`. (d) The experiment code lives
+in a separate module `ppp/spatial_validation.py` (keeps `mapping.py` near the § 33.2 size guideline); criterion 5
+of § 24.2 (incremental benefit with block bootstrap) needs grid-specific point reconstruction and is reported as
+NOT_EVALUATED until it is implemented with real data. (e) The hourly archive grid (§ 25) is a separate kriging run
+with [t − 30, t + 30) min windows (≥ 8 of 12 values); its RMS difference to the mean of the 15-min maps in the hour
+is logged and stored as a global attribute.

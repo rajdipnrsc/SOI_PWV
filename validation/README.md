@@ -14,8 +14,8 @@ been run (TDS § 0.2, § 32, § 36.14). The table shows which gates have a measu
 | 5 | Full QC, tuning (§ 6.7), Stage-5 PRIDE gate, Level-2 gates, Level-3 report | **NOT RUN** (needs CODE products, IGS/CODE troposphere, radiosondes) | tools: `scripts/tune_zwd_noise.py`, `scripts/compare_ztd.py` (IGS/CODE SINEX_TRO reader, harmonic amplitudes, gate verdicts); synthetic slip-injection results in `level0_report.md` |
 | 6 | PPP-AR gates (§ 30.5) | **Synthetic PASS; real-data gate NOT RUN** | `tests/test_ambiguity.py` (all NL SD integers correct, ratio 357, P_s ≈ 1, fixed−float 0.2 mm) |
 | 7 | PWV gates vs radiosonde (§ 30.6) | **NOT RUN** | conversion and uncertainty budget unit-tested (`tests/test_pwv.py`) |
-| 8 | Spatial validation experiment (§ 31) | **NOT RUN** | kriging maths (UK variance vs dense formula), REML recovery, LOSO machinery tested (`tests/test_mapping.py`) |
-| 9–10 | Network reproducibility, operations | NOT RUN | — |
+| 8 | Spatial validation experiment (§ 31) | **NOT RUN** (needs ≥ 1 year of network products + ERA5) | kriging maths (UK variance vs dense formula), REML recovery, LOSO/block-CV/thinning/E(d)/supportable-spacing machinery tested (`tests/test_mapping.py`, `tests/test_spatial_validation.py`); run `scripts/spatial_experiment.py RESULTS --days 2024-001:2024-366 --write-support` → `stage8_spatial/` |
+| 9–10 | Network reproducibility, operations | **Tools ready; NOT RUN** | `network/run_network.sh`, `network/reprocess.py` (Rapid→Final, campaigns, grid rebuild list), `network/daily.sh`, `network/monitor.py`; selection rules tested (`tests/test_products.py`, `tests/test_network.py`) |
 
 ## What the development sandbox could and could not do
 

@@ -125,12 +125,64 @@ def test_pwv_map_cli_height_scaling(tmp_path):
                          "product_tier": "FINAL", "manifest_id": "m", "solution_type": "FLOAT"})
         out.write_csv(str(res / f"{s.station}_2024197_PWV.csv"), rows, out.ZTD_COLUMNS + out.PWV_EXTRA, "synthetic")
     rc = pwv_map.main([str(res), "--day", "2024-197", "--grid", "G050", "--out", str(tmp_path / "maps"),
-                       "--slot-min", "180", "--cv", "--quiet"])
+                       "--slot-min", "180", "--cv", "--hourly", "--quiet"])
     assert rc == 0
     import netCDF4
-    f = [x for x in os.listdir(tmp_path / "maps") if x.endswith(".nc")][0]
+    files = sorted(x for x in os.listdir(tmp_path / "maps") if x.endswith(".nc"))
+    assert any("_01H_2024197_" in x for x in files)
+    assert os.path.exists(tmp_path / "maps" / "station_residual_history.csv")
+    f = [x for x in files if "_180M_" in x][0]
     assert f.startswith("INPWV_G050_180M_2024197_FINAL")
     with netCDF4.Dataset(str(tmp_path / "maps" / f)) as nc:
         assert nc.background_source == "HEIGHT_SCALING_ONLY"
         assert nc["PWV"].shape == (8, len(nc["lat"]), len(nc["lon"]))
         assert set(np.unique(nc["confidence_class"][:])) <= {0, 1, 2, 3, 4}
+        assert (nc["supportable_grid_spacing"][:] == -1).all()            # not determined before § 31
+
+
+def test_aggregation_variance_aware():
+    """0.25 -> 0.5 deg (TDS § 27.1): area-weighted means; sigma of a fully correlated field is not reduced."""
+    g = mp.make_grid("G025", domain=(10.0, 14.0, 76.0, 80.0))
+    ny, nx = len(g.lat), len(g.lon)
+    LA, LO = np.meshgrid(g.lat, g.lon, indexing="ij")
+    f = lambda a: np.array(a, dtype=float)  # noqa: E731
+    pwv = 20.0 + LA + 0.5 * LO
+    cls = np.full((ny, nx), 1, dtype=np.int8)
+    cls[0, :] = 4                                                # unsupported first row
+    r = mp.SlotResult(f(pwv), np.full((ny, nx), 2.0), f(pwv), np.zeros((ny, nx)), f(pwv) * 6.4, f(pwv) * 6.4,
+                      np.full((ny, nx), 2000.0), np.full((ny, nx), 12.0), np.ones((ny, nx)), cls,
+                      np.full((ny, nx), 10.0), np.full((ny, nx), 3), np.full((ny, nx), 5), np.full((ny, nx), 20.0),
+                      np.full((ny, nx), 950.0), np.full((ny, nx), 280.0), np.array([1]), 1)
+    cg, out = mp.aggregate(g, [r], "G050", mp.CovParams(2.0, 1e6, 0.5))   # L huge -> full correlation
+    o = out[0]
+    i = int(np.argmin(np.abs(cg.lat - 12.0)))
+    j = int(np.argmin(np.abs(cg.lon - 78.0)))
+    assert o.pwv[i, j] == np.float64(20.0 + 12.0 + 39.0) or abs(o.pwv[i, j] - 71.0) < 1e-9   # linear field
+    assert abs(o.sigma[i, j] - 2.0) < 1e-3                       # fully correlated: no sqrt(n) reduction
+    cg2, out2 = mp.aggregate(g, [r], "G050", mp.CovParams(2.0, 1.0, 0.5))  # tiny L -> independent cells
+    assert out2[0].sigma[i, j] < 1.3
+    assert o.cls[0, 2] == 4 and np.isnan(o.pwv[0, 2])            # worst class kept, fill value
+
+
+def test_station_grey_and_blacklist(tmp_path):
+    rng = np.random.default_rng(0)
+    st = [mp.StationSeries(f"S{k:03d}", 17 + 0.3 * (k % 5), 78 + 0.3 * (k // 5), 500, 500, np.zeros(1, np.int64),
+                           np.zeros(1), np.zeros(1), np.zeros(1), "FINAL", "m", "FLOAT") for k in range(20)]
+    path = str(tmp_path / "hist.csv")
+    for d in range(1, 31):
+        daily = {s.station: (rng.normal(0, 0.3) + (5.0 if s.station == "S007" else 0)
+                             + (3.0 if s.station == "S012" else 0), 24) for s in st}
+        rows = mp.update_residual_history(path, f"2024{d:03d}", daily, st)
+    rows = mp.update_residual_history(path, "2024030", {"S000": (0.0, 24)}, st[:1])   # day replaced, not added
+    assert sum(r["day"] == "2024030" for r in rows) == 1
+    grey, black, table = mp.station_lists(rows, "2024031")
+    assert black == ["S007"] and grey == ["S012"]
+    assert abs(table["S007"]["deviation_mm"] - 5.0) < 0.5
+
+
+def test_hourly_window():
+    s = mp.StationSeries("A", 17, 78, 500, 500, DAY + np.arange(0, 3600, 300, dtype=np.int64) * ts.NS,
+                         np.arange(12.0), np.ones(12), np.zeros(12), "FINAL", "m", "FLOAT")
+    half, n = mp.SLOT_WINDOWS["01H"]
+    assert mp.slot_values(s, DAY + 1800 * ts.NS, half, n) == (5.5, 1.0)
+    assert mp.slot_values(s, DAY, half, n) is None                       # only 6 of 12 values

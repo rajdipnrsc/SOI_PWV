@@ -542,9 +542,16 @@ class SlotResult:
     outliers: list = field(default_factory=list)
 
 
-def map_slot(grid, stations, slot_ns, cp, bg=None, sigma_repr=settings.MAP_SIGMA_BG_REPR_MM, res_bg_km=100.0):
-    """Build all layers for one 15-min slot (TDS § 22.3-22.6, § 24.3, § 26)."""
-    vals = [slot_values(s, slot_ns) for s in stations]
+SLOT_WINDOWS = {"15M": (int(7.5 * 60) * ts.NS, 2),        # [tau - 7.5, tau + 7.5) min, >= 2 of 3 (TDS § 25)
+                "01H": (30 * 60 * ts.NS, 8)}                # hourly archive: [t - 30, t + 30) min, >= 8 of 12
+
+
+def map_slot(grid, stations, slot_ns, cp, bg=None, sigma_repr=settings.MAP_SIGMA_BG_REPR_MM, res_bg_km=100.0,
+             window="15M", exclude=()):
+    """Build all layers for one 15-min (or hourly) slot (TDS § 22.3-22.6, § 24.3, § 26).
+    exclude: blacklisted station names (§ 21 item 2)."""
+    half, min_n = SLOT_WINDOWS[window]
+    vals = [None if s.station in exclude else slot_values(s, slot_ns, half, min_n) for s in stations]
     avail = np.array([v is not None for v in vals], dtype=np.int8)
     sts = [s for s, v in zip(stations, vals) if v is not None]
     v = np.array([vv for vv in vals if vv is not None]) if any(avail) else np.zeros((0, 2))
@@ -630,10 +637,10 @@ def map_slot(grid, stations, slot_ns, cp, bg=None, sigma_repr=settings.MAP_SIGMA
 
 
 # ================================================================================ cross-validation
-def loso(stations, slot_ns, cp, bg=None):
+def loso(stations, slot_ns, cp, bg=None, exclude=()):
     """Leave-one-station-out residual CV for one slot (TDS § 31): returns list of (station, obs, pred, sigma,
     d_nearest_km)."""
-    vals = [slot_values(s, slot_ns) for s in stations]
+    vals = [None if s.station in exclude else slot_values(s, slot_ns) for s in stations]
     sts = [s for s, v in zip(stations, vals) if v is not None]
     v = np.array([vv for vv in vals if vv is not None])
     if len(sts) < 5:
@@ -672,8 +679,188 @@ def cv_metrics(rows):
             "within_1sigma": float(np.mean(np.abs(z) <= 1)), "within_2sigma": float(np.mean(np.abs(z) <= 2))}
 
 
+# ================================================================================ station grey/blacklist
+def station_daily_residuals(stations, day_ns, bg=None, step_h=1):
+    """Median (PWV_GNSS - PWV_bg) per station for one day from hourly 15-min slot values (input to § 21 item 2)."""
+    res = {s.station: [] for s in stations}
+    for k in range(0, 24, step_h):
+        sl = day_ns + k * 3600 * ts.NS
+        vals = [slot_values(s, sl) for s in stations]
+        sts = [s for s, v in zip(stations, vals) if v is not None]
+        if not sts:
+            continue
+        v = np.array([vv[0] for vv in vals if vv is not None])
+        h = np.array([s.h_orth for s in sts])
+        if bg is not None:
+            b, _, _ = background_at(bg, np.array([s.lat for s in sts]), np.array([s.lon for s in sts]), h, sl)
+        else:
+            b = height_scaling_background(v, h, h)
+        for s, r in zip(sts, v - b):
+            res[s.station].append(float(r))
+    return {k: (float(np.median(v)), len(v)) for k, v in res.items() if v}
+
+
+def update_residual_history(path, day_tag, daily, stations):
+    """Plain CSV history station,day,lat,lon,median_resid_mm,n (one row per station-day; the day is replaced)."""
+    rows = []
+    if os.path.exists(path):
+        with open(path) as fh:
+            rows = [r for r in csv.DictReader(fh) if r["day"] != day_tag]
+    pos = {s.station: (s.lat, s.lon) for s in stations}
+    for st, (med, n) in sorted(daily.items()):
+        rows.append({"station": st, "day": day_tag, "lat": f"{pos[st][0]:.5f}", "lon": f"{pos[st][1]:.5f}",
+                     "median_resid_mm": f"{med:.3f}", "n": n})
+    tmp = path + f".{os.getpid()}.tmp"
+    with open(tmp, "w", newline="") as fh:
+        w = csv.DictWriter(fh, ["station", "day", "lat", "lon", "median_resid_mm", "n"])
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(tmp, path)
+    return rows
+
+
+def station_lists(history_rows, day_tag, days=None, radius_km=None, grey_mm=None, black_mm=None, min_days=10):
+    """Greylist/blacklist (TDS § 21 item 2): the station's 30-day median residual minus the median of its
+    neighbours' (within 150 km) medians; > 2 mm greylist (review, still used), > 4 mm blacklist (excluded) [A].
+    Uses the days before day_tag only.  Returns (grey, black, table)."""
+    days = days or settings.MAP_LIST_DAYS
+    radius_km = radius_km or settings.MAP_LIST_RADIUS_KM
+    grey_mm = grey_mm or settings.MAP_GREY_MM
+    black_mm = black_mm or settings.MAP_BLACK_MM
+    y, d = int(day_tag[:4]), int(day_tag[4:])
+    d_ns = ts.to_ns(y, 1, 1) + (d - 1) * ts.DAY_NS
+    win = set()
+    for k in range(1, days + 1):
+        yy, dd = ts.year_doy(d_ns - k * ts.DAY_NS)
+        win.add(f"{yy:04d}{dd:03d}")
+    per, pos = {}, {}
+    for r in history_rows:
+        if r["day"] in win:
+            per.setdefault(r["station"], []).append(float(r["median_resid_mm"]))
+            pos[r["station"]] = (float(r["lat"]), float(r["lon"]))
+    med = {k: float(np.median(v)) for k, v in per.items() if len(v) >= min_days}
+    names = sorted(med)
+    grey, black, table = [], [], {}
+    if len(names) < 2:
+        return grey, black, table
+    u = to_unit(np.array([pos[n][0] for n in names]), np.array([pos[n][1] for n in names]))
+    dm = gc_km(u, u)
+    for i, n in enumerate(names):
+        nb = [names[j] for j in np.nonzero((dm[i] <= radius_km) & (np.arange(len(names)) != i))[0]]
+        if not nb:
+            continue
+        dev = med[n] - float(np.median([med[m] for m in nb]))
+        table[n] = {"median_mm": med[n], "deviation_mm": dev, "neighbours": len(nb)}
+        if abs(dev) > black_mm:
+            black.append(n)
+        elif abs(dev) > grey_mm:
+            grey.append(n)
+    return grey, black, table
+
+
+# ================================================================================ aggregation (TDS § 27.1)
+def _agg_weights(fine, coarse_step):
+    """Area weights of fine cells inside each coarse cell (1-D): overlap length / fine step."""
+    w = np.zeros((len(coarse_step[0]), len(fine)))
+    for i, c in enumerate(coarse_step[0]):
+        lo, hi = c - coarse_step[1] / 2, c + coarse_step[1] / 2
+        flo, fhi = fine - coarse_step[2] / 2, fine + coarse_step[2] / 2
+        w[i] = np.clip(np.minimum(hi, fhi) - np.maximum(lo, flo), 0, None) / coarse_step[2]
+    return w
+
+
+def aggregate(grid, results, name="G050", cp=None):
+    """Variance-aware aggregation of a fine grid to a coarse one (0.25 deg -> 0.5 deg, TDS § 27.1).
+
+    Values: area-weighted means of the fine cells overlapping the coarse cell (ERA5-coincident centres on both grids,
+    so edge cells count with weight 1/2).  sigma: sqrt(w^T C w)/sum(w) with C_ij = rho_ij sigma_i sigma_j and
+    rho_ij = exp(-d_ij/L) from the fitted residual covariance (errors of neighbouring cells are strongly correlated;
+    averaging does not reduce sigma by sqrt(n)).  A coarse cell is filled only if >= 50 % of its area has values;
+    its class is the worst class of the contributing fine cells (conservative)."""
+    cp = cp or CovParams()
+    cg = make_grid(name)
+    cg.lat = cg.lat[(cg.lat >= grid.lat.min()) & (cg.lat <= grid.lat.max())]
+    cg.lon = cg.lon[(cg.lon >= grid.lon.min()) & (cg.lon <= grid.lon.max())]
+    wa = _agg_weights(grid.lat, (cg.lat, cg.step, grid.step))
+    wo = _agg_weights(grid.lon, (cg.lon, cg.step, grid.step))
+    ny, nx = len(cg.lat), len(cg.lon)
+    W = lambda a: np.einsum("ia,jb,ab->ij", wa, wo, a)  # noqa: E731
+    area = W(np.ones_like(grid.h))
+    cg.h = W(grid.h) / area
+    cg.h_std = np.sqrt(np.maximum(W(grid.h_std ** 2 + grid.h ** 2) / area - cg.h ** 2, 0))
+    cg.land = W(grid.land.astype(float)) / area >= 0.5
+    cg.dem_source = grid.dem_source + f" (aggregated from {grid.name})"
+    # children of each coarse row/column (<= K per axis, padded with weight 0)
+    def kids(w):
+        K = int((w > 0).sum(1).max())
+        idx = np.zeros((w.shape[0], K), dtype=int)
+        ww = np.zeros((w.shape[0], K))
+        for i_ in range(w.shape[0]):
+            nz = np.nonzero(w[i_])[0]
+            idx[i_, :len(nz)] = nz
+            idx[i_, len(nz):] = nz[-1] if len(nz) else 0
+            ww[i_, :len(nz)] = w[i_, nz]
+        return idx, ww
+    ia, wia = kids(wa)
+    jo, wjo = kids(wo)
+    Ka, Ko = ia.shape[1], jo.shape[1]
+    # correlation of fine-cell errors within a coarse cell: rho = exp(-d/L) between child cell centres
+    LAk = grid.lat[ia][:, None, :, None] + 0 * grid.lon[jo][None, :, None, :]
+    LOk = grid.lon[jo][None, :, None, :] + 0 * grid.lat[ia][:, None, :, None]
+    U = to_unit(LAk.ravel(), LOk.ravel()).reshape(LAk.shape + (3,))
+    rho = np.exp(-R_EARTH_KM * np.arccos(np.clip(np.einsum("ijabx,ijcdx->ijabcd", U, U), -1, 1)) / cp.L_km)
+    Wt = wia[:, None, :, None] * wjo[None, :, None, :]                   # (ny, nx, Ka, Ko)
+    out = []
+    for r in results:
+        layers = {}
+        for nm in ("pwv", "bg", "resid", "ztd", "zwd", "zhd", "info", "d1", "ps", "tm", "res_eff"):
+            a = getattr(r, nm)
+            ok = np.isfinite(a)
+            num = W(np.where(ok, a, 0.0))
+            den = W(ok.astype(float))
+            layers[nm] = np.where(den >= 0.5 * area, num / np.maximum(den, 1e-12), np.nan)
+        sg = {}
+        for key, src in (("sig", r.sigma), ("sig_ztd", r.sig_ztd)):
+            sv = src[ia[:, None, :, None], jo[None, :, None, :]]           # (ny, nx, Ka, Ko)
+            ww = Wt * np.isfinite(sv)
+            ws = ww * np.nan_to_num(sv)
+            q = np.einsum("ijab,ijcd,ijabcd->ij", ws, ws, rho)
+            sg[key] = np.sqrt(q) / np.maximum(ww.sum((2, 3)), 1e-12)
+        cc = r.cls[ia[:, None, :, None], jo[None, :, None, :]].astype(int)
+        cc = np.where((Wt > 0) & (cc > 0), cc, 0)
+        cls = cc.max((2, 3)).astype(np.int8)
+        sig, sig_ztd = sg["sig"], sg["sig_ztd"]
+        sig[~np.isfinite(layers["pwv"])] = np.nan
+        sig_ztd[~np.isfinite(layers["ztd"])] = np.nan
+        n50 = np.rint(W(r.n50.astype(float)) / area).astype(int)
+        n100 = np.rint(W(r.n100.astype(float)) / area).astype(int)
+        cls[~cg.land] = 0
+        for a in (layers["pwv"], layers["ztd"], layers["zwd"], sig, sig_ztd):
+            a[(cls == 4) | (cls == 0)] = np.nan          # class-4/0 cells carry fill values (TDS § 26, § 36)
+        out.append(SlotResult(layers["pwv"], sig, layers["bg"], layers["resid"], layers["ztd"], layers["zwd"],
+                              layers["zhd"], sig_ztd, layers["info"], cls, layers["d1"], n50, n100,
+                              layers["res_eff"], layers["ps"], layers["tm"], r.avail, r.n_used, r.outliers))
+    return cg, out
+
+
 # ================================================================================ output
-def write_grid_netcdf(path, grid, slots_t, results, stations, attrs):
+SUPPORT_CODES = {0.1: 1, 0.125: 2, 0.25: 3, 0.5: 4, None: 0}     # supportable_grid_spacing flag values
+
+
+def support_layer(grid, support):
+    """Static supportable_grid_spacing layer from a {(lat0, lon0) 1-deg tile: spacing_deg|None} table; -1 where
+    not determined (before the § 31 experiment)."""
+    lay = np.full((len(grid.lat), len(grid.lon)), -1, dtype=np.int8)
+    if not support:
+        return lay
+    for (la0, lo0), sp in support.items():
+        mi = (grid.lat >= la0) & (grid.lat < la0 + 1.0)
+        mj = (grid.lon >= lo0) & (grid.lon < lo0 + 1.0)
+        lay[np.ix_(mi, mj)] = SUPPORT_CODES.get(sp, 0)
+    return lay
+
+
+def write_grid_netcdf(path, grid, slots_t, results, stations, attrs, support=None):
     """NetCDF-4 CF-1.10 + ACDD-1.3 grid file (TDS § 27.3)."""
     import netCDF4
     ny, nx = len(grid.lat), len(grid.lon)
@@ -729,6 +916,11 @@ def write_grid_netcdf(path, grid, slots_t, results, stations, attrs):
             v = nc.createVariable(name, "f4", ("lat", "lon"))
             v.units = un
             v[:] = arr
+        sg = nc.createVariable("supportable_grid_spacing", "i1", ("lat", "lon"))
+        sg.flag_values = np.array([-1, 0, 1, 2, 3, 4], dtype=np.int8)
+        sg.flag_meanings = "not_determined background_only 0.1deg 0.125deg 0.25deg 0.5deg"
+        sg.comment = "TDS § 24.4; from the § 31 spatial validation experiment (version in global attributes)"
+        sg[:] = support_layer(grid, support)
         lm = nc.createVariable("land_sea_mask", "i1", ("lat", "lon"))
         lm[:] = grid.land.astype(np.int8)
         sn = nc.createVariable("station_name", str, ("station",))
