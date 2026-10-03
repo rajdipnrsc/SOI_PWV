@@ -697,6 +697,8 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
         LOG.warning("QUICKLOOK_FAILED: %s", exc)
     warns = plog.warnings()
     man.update({
+        "nav_file": {"name": os.path.basename(args.nav),
+                     "sha256": prd.sha256(args.nav) if os.path.exists(args.nav) else None},
         "rinex_files": [{"name": os.path.basename(p.path), "sha256": prd.sha256(p.path),
                          "header": {"marker": p.header.marker_name, "receiver": p.header.receiver,
                                     "antenna": p.header.antenna_type, "delta_hen": list(p.header.delta_hen)}}

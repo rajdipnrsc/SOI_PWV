@@ -74,6 +74,22 @@ ERA5/NWP background at station and cell height + GNSS residual regression krigin
 installed and a Copernicus key is in `~/.cdsapirc`; otherwise the benchmark height-normalised method is used and
 labelled `HEIGHT_SCALING_ONLY`. Resolution/accuracy claims require the § 31 experiment.
 
+## Network processing, reprocessing, daily operation (Stages 9-10)
+
+```bash
+network/run_network.sh /data/rinex/2024/197 32 --out results     # all station-days of a folder, 32 processes
+python network/reprocess.py results --rinex-dir /data/rinex       # Rapid -> Final where CODE finals now exist
+python network/reprocess.py results --rinex-dir /data/rinex --campaign 2025A --settings new.json   # campaign
+python network/reprocess.py results --maps results/maps           # grids to rebuild (100 % FINAL inputs)
+python network/monitor.py results --day 2024-197 --expect stations.csv
+network/daily.sh /data/rinex results 32                           # cron recipe (see header of the script)
+```
+Each run is an ordinary `pwv_ppp.py` call; the product cache is safe for parallel processes. Outputs are
+immutable: re-runs move earlier files to `results/superseded/<manifest_id>/`, and consumers (e.g. `pwv_map.py`)
+select products by `best_available` (FINAL > RAPID_M > RAPID_0, then software version, then run time) or
+`--as-of DATE` for reproducibility (TDS § 19.3). A campaign label (`PROCESSING_CAMPAIGN`) is stored in each manifest;
+`PWV_PPP_SETTINGS=<file.json>` points a run to a settings override file.
+
 ## Layout
 
 ```
@@ -84,6 +100,7 @@ ppp/coords.py corrections.py troposphere.py model.py                     Stage 2
 ppp/preprocess.py estimator.py output.py pwv.py ambiguity.py mapping.py  Stages 3-8
 ppp/data/           coefficient tables (VMF3 b/c, GMF, HARDISP 342 constituents, Meeus Moon)
 tests/              pytest suite (+ reference fixtures from official IERS routines and RTKLIB)
+network/            parallel run, reprocessing, daily cron and monitoring recipes (Stages 9-10)
 validation/         gate status, Level-0 report, benchmark/sensitivity/tuning scripts
 docs/TDS.md         the specification; docs/decisions.md, docs/verify_log.md
 Data/               sample RINEX (HYDE, 2024 DOY 015/197/229)

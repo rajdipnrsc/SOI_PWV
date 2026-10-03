@@ -197,3 +197,25 @@ def test_published_checksum_manifest(tmp_path, server, monkeypatch):
     p2, why = prd.fetch_product(dl, "CLK", "COD0OPSFIN", DAY)
     assert p2 is None
     assert sum(a["url"].endswith("SHA512SUMS") for a in dl.attempts) == 1      # manifest fetched once per run
+
+
+def test_best_available_and_as_of(tmp_path):
+    """TDS § 19.3: FINAL > RAPID_M > RAPID_0 > ..., then version, then run time; as_of reproduces an earlier choice."""
+    def man(mid, tier, ver, when, d="", status="OK_FLOAT_ONLY"):
+        folder = tmp_path / d if d else tmp_path
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "HYDE_2024015_PWV.csv").write_text("x\n")
+        prd.write_json(str(folder / "HYDE_2024015_manifest.json"),
+                       {"manifest_id": mid, "station": "HYDE", "day": "2024-015", "tier": tier, "status": status,
+                        "software_version": ver, "run_timestamp": when, "campaign": "default",
+                        "outputs": ["HYDE_2024015_PWV.csv"]})
+    man("a", "RAPID_0", "0.9.0+abc", "2024-01-16T10:00:00Z", "superseded/a")
+    man("b", "FINAL", "0.9.0+abc", "2024-02-05T10:00:00Z", "superseded/b")
+    man("c", "RAPID_M", "1.0.0", "2024-03-01T10:00:00Z")          # later, lower tier: must not win
+    ms = prd.scan_manifests(str(tmp_path))
+    assert len(ms) == 3
+    assert prd.select_manifests(ms)[("HYDE", "2024-015")]["manifest_id"] == "b"
+    assert prd.select_manifests(ms, as_of="2024-01-20")[("HYDE", "2024-015")]["manifest_id"] == "a"
+    assert prd.select_manifests(ms, as_of="2024-01-01") == {}
+    p = prd.selected_file(prd.select_manifests(ms)[("HYDE", "2024-015")], "_PWV.csv")
+    assert p.endswith(os.path.join("superseded", "b", "HYDE_2024015_PWV.csv"))

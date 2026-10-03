@@ -6,6 +6,7 @@ cache layout, manifest), § 33.6 (automatic downloads of ANTEX, VMF3, GPT3, leap
 Nothing here hard-codes a directory tree or filename: all templates live in settings.py (TDS § 36.5).
 """
 import datetime as _dt
+import glob as _glob
 import hashlib
 import json
 import os
@@ -119,8 +120,10 @@ def sha256(path):
 
 
 def write_meta(path, meta):
-    with open(path + ".meta.json", "w") as fh:
+    tmp = path + f".meta.json.{os.getpid()}.tmp"           # atomic: parallel station runs share the cache
+    with open(tmp, "w") as fh:
         json.dump(meta, fh, indent=1, default=str)
+    os.replace(tmp, path + ".meta.json")
 
 
 def read_meta(path):
@@ -297,7 +300,7 @@ def fetch_product(dl, ptype, family, day_ns):
         for tmpl in settings.PRODUCT_SOURCES:
             url = tmpl.format(filename=nm, **tok)
             dest = cache_path(dl.cache_dir, family, day_ns, nm)
-            tmp_dest = dest + ".new"
+            tmp_dest = dest + f".{os.getpid()}.new"
             if not dl.get(url, tmp_dest):
                 continue
             chk = check_published_checksum(dl, tmpl, tok, nm, tmp_dest)
@@ -496,7 +499,7 @@ def _fetch_simple(dl, subdir, filename, urls, max_age_days=None, validate=None):
         if fresh or dl.offline:
             return dest, meta
     for url in urls:
-        tmp = dest + ".new"
+        tmp = dest + f".{os.getpid()}.new"
         if dl.get(url, tmp):
             if validate is not None:
                 try:
@@ -629,11 +632,12 @@ def software_version():
 def new_manifest(station, day_str):
     return {"manifest_id": str(uuid.uuid4()), "station": station, "day": day_str,
             "analysis_centre": "COD", "run_timestamp": _now_iso(), "software_version": software_version(),
+            "campaign": settings.PROCESSING_CAMPAIGN,
             "supersedes": None, "superseded_by": None}
 
 
 def write_json(path, obj):
-    tmp = path + ".tmp"
+    tmp = path + f".{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
         json.dump(obj, fh, indent=1, default=_json_default)
     os.replace(tmp, path)
@@ -673,3 +677,67 @@ def find_superseded(out_dir, station, day_str, new_tier, new_manifest_id):
                 old_ids.append(m.get("manifest_id"))
     return old_ids
 
+
+
+# ================================================================= product selection (TDS § 19.3)
+TIER_RANK = {"FINAL": 3, "RAPID_M": 2, "RAPID_0": 1}
+
+
+def scan_manifests(results_dir):
+    """All station-day manifests in results_dir and its superseded/<id>/ folders (plain JSON, no database)."""
+    found = []
+    pats = [os.path.join(results_dir, "*_manifest.json"), os.path.join(results_dir, "superseded", "*",
+                                                                          "*_manifest.json")]
+    for pat in pats:
+        for p in sorted(_glob.glob(pat)):
+            try:
+                with open(p) as fh:
+                    m = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(m, dict) or "manifest_id" not in m or not m.get("outputs"):
+                continue
+            m["_dir"] = os.path.dirname(p)
+            found.append(m)
+    return found
+
+
+def _version_key(v):
+    core = str(v or "0").split("+")[0]
+    out_ = []
+    for x in core.split("."):
+        try:
+            out_.append(int(x))
+        except ValueError:
+            out_.append(0)
+    return tuple(out_)
+
+
+def select_manifests(manifests, as_of=None, campaign=None):
+    """best_available per (station, day): FINAL > RAPID_M > RAPID_0, then highest software version, then latest
+    run (TDS § 19.3).  as_of (ISO date/time, UTC) restricts the choice to runs made up to that time, which reproduces
+    what best_available returned then.  campaign restricts to one declared processing campaign."""
+    if as_of is not None and len(as_of) == 10:
+        as_of += "T23:59:59Z"
+    best = {}
+    for m in manifests:
+        if m.get("status") not in ("OK_AR", "OK_FLOAT_ONLY"):
+            continue
+        if as_of is not None and str(m.get("run_timestamp", "")) > as_of:
+            continue
+        if campaign is not None and m.get("campaign") != campaign:
+            continue
+        key = (m.get("station"), m.get("day"))
+        rank = (TIER_RANK.get(m.get("tier"), 0), _version_key(m.get("software_version")), m.get("run_timestamp", ""))
+        if key not in best or rank > best[key][0]:
+            best[key] = (rank, m)
+    return {k: v[1] for k, v in best.items()}
+
+
+def selected_file(m, suffix):
+    """Path of an output (e.g. '_PWV.csv') of a selected manifest, or None."""
+    names = [n for n in m.get("outputs", []) if n.endswith(suffix)]
+    if not names:
+        return None
+    p = os.path.join(m["_dir"], names[0])
+    return p if os.path.exists(p) else None

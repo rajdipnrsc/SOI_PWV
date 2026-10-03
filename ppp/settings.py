@@ -12,6 +12,7 @@ import os
 
 SOFTWARE_NAME = "pwv_ppp"
 SOFTWARE_VERSION = "0.9.0"          # semantic version; git commit is appended at run time
+PROCESSING_CAMPAIGN = "default"      # declared reprocessing campaign label (TDS § 19.3), recorded in manifests
 SCHEMA_VERSION = "1.0"              # station product schema (TDS § 16, § 20)
 
 # ----------------------------------------------------------------------------------------------
@@ -337,7 +338,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 def apply_overrides(path=None):
     """Override UPPER_CASE settings from a small YAML/JSON file (TDS § 33.2). Returns dict applied."""
-    candidates = [path] if path else ["pwv_ppp_settings.yaml", "pwv_ppp_settings.yml", "pwv_ppp_settings.json"]
+    candidates = [path] if path else [os.environ.get("PWV_PPP_SETTINGS"), "pwv_ppp_settings.yaml",
+                                      "pwv_ppp_settings.yml", "pwv_ppp_settings.json"]
     g = globals()
     for p in candidates:
         if not p or not os.path.exists(p):

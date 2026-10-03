@@ -35,6 +35,8 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join(settings.RESULTS_DIR, "maps"))
     ap.add_argument("--slot-min", type=int, default=settings.MAP_SLOT_MIN)
     ap.add_argument("--cv", action="store_true", help="leave-one-station-out cross-validation report")
+    ap.add_argument("--as-of", default=None, help="use station products as available at this UTC date/time "
+                    "(reproducibility, TDS § 19.3); default best_available")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     plog.setup("quiet" if a.quiet else "normal")
@@ -48,7 +50,7 @@ def main(argv=None):
     tag = f"{y:04d}{doy:03d}"
     os.makedirs(a.out, exist_ok=True)
     plog.add_file(os.path.join(a.out, f"INPWV_{a.grid}_{tag}.log"))
-    stations = mp.read_station_products(a.results, tag)
+    stations = mp.read_station_products(a.results, tag, as_of=a.as_of)
     LOG.info("Stations with usable PWV products for %s: %d", a.day, len(stations))
     if len(stations) < 3:
         LOG.error("TOO_FEW_STATIONS: at least 3 station products are needed for a map")
@@ -120,6 +122,7 @@ def main(argv=None):
              "dem_source": grid.dem_source, "covariance": {"sigma_s_mm": cp.sigma_s, "L_km": cp.L_km,
                                                             "nugget_mm": cp.nugget, "fitted": cp.fitted},
              "station_manifests": [s.manifest_id for s in stations], "config_hash": chash,
+             "station_selection": f"as_of {a.as_of}" if a.as_of else "best_available",
              "software_version": prd.software_version(), "supportable_resolution_version": "not yet determined (§ 31)",
              "date_created": prd._now_iso()}
     path = os.path.join(a.out, name)

@@ -50,14 +50,30 @@ class StationSeries:
     solution_type: str
 
 
-def read_station_products(folder, day_str=None):
+def product_paths(folder, day_str=None, as_of=None, campaign=None):
+    """PWV CSV files to use: best_available (or as_of) selection over the manifests (TDS § 19.3); folders without
+    manifests fall back to the current *_PWV.csv files."""
+    from .products import scan_manifests, select_manifests, selected_file
+    sel = select_manifests(scan_manifests(folder), as_of=as_of, campaign=campaign)
+    paths = []
+    for (st, day), m in sorted(sel.items()):
+        if day_str and day.replace("-", "") != day_str.replace("-", ""):
+            continue
+        p = selected_file(m, "_PWV.csv")
+        if p:
+            paths.append(p)
+    if not sel and as_of is None:
+        paths = sorted(glob.glob(os.path.join(folder, f"*_{day_str}_PWV.csv" if day_str else "*_PWV.csv")))
+    return paths
+
+
+def read_station_products(folder, day_str=None, as_of=None, campaign=None):
     """Read System-1 PWV CSV products (TDS § 20). Applies ingestion QC (TDS § 21):
     drop NO_DATA / FEW_SATS / SIGMA_HIGH rows and NOT_CONVERGED; EDGE/REINIT rows get sigma x 2."""
     bits = settings.QC_BITS
     drop_mask = (1 << bits["NO_DATA"]) | (1 << bits["FEW_SATS"]) | (1 << bits["SIGMA_HIGH"])
-    pattern = os.path.join(folder, f"*_{day_str}_PWV.csv" if day_str else "*_PWV.csv")
     out = []
-    for path in sorted(glob.glob(pattern)):
+    for path in product_paths(folder, day_str, as_of, campaign):
         with open(path) as fh:
             lines = [L for L in fh if not L.startswith("#")]
         rd = csv.DictReader(lines)
