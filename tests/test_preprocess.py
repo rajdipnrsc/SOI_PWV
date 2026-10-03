@@ -98,3 +98,13 @@ def test_observable_selection_stable():
     sel = pp.select_observables(o)
     assert set(sel.pair_names.values()) == {("C1C", "L1C", "C2W", "L2W")}   # no L2W<->L2X flipping
     assert np.isnan(sel.L2[9, 0])                                           # missing epoch becomes a gap
+
+
+def test_split_at_day_boundary():
+    sel, t, el, vis = synth.make_raw(seed=5)
+    arcs = pp.detect_slips_and_arcs(sel, t, el, vis, np.radians(7.0))
+    kb = 1440
+    spanning = [a for a, m in arcs.arc_meta.items() if m["first"] < kb <= m["last"]]
+    n = pp.split_at_epochs(arcs, [kb], "DAY_BOUNDARY")
+    assert n == len(spanning) > 0
+    assert not any(m["first"] < kb <= m["last"] for m in arcs.arc_meta.values())

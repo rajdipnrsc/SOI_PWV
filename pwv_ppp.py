@@ -411,6 +411,12 @@ def run(args, products_override=None, tropo_override=None, atx_override=None):
     obs0, m0 = build_obsset(ctx, X_ap)
     t_s = (epochs - epochs[0]) / ts.NS
     arcs = pp.detect_slips_and_arcs(sel_c, t_s, m0.el, m0.valid & ~excl_mask, ctx["cutoff"])
+    if settings.RESET_AMBIGUITIES_AT_DAY_BOUNDARY:
+        bounds = [int(np.searchsorted(epochs, b)) for b in range(ts.day_start(int(epochs[0])) + ts.DAY_NS,
+                                                                  int(epochs[-1]) + 1, ts.DAY_NS)]
+        nb_ = pp.split_at_epochs(arcs, bounds, "DAY_BOUNDARY")
+        if nb_:
+            LOG.info("Ambiguities reset at %d product-day boundary crossing(s) (TDS § 11.2)", nb_)
     for (kj, _ms, repaired) in clk_jumps:
         if not repaired:                                  # unrepaired receiver clock jump -> all arcs reset (§ 5.7)
             for j in range(len(sel_c.sats)):

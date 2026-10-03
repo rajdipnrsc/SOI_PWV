@@ -370,3 +370,27 @@ def split_arc(arcinfo, j, k_from, cause):
         del arcinfo.arc_meta[aid]
     arcinfo.reasons[cause] = arcinfo.reasons.get(cause, 0) + 1
     return new
+
+
+def split_at_epochs(arcinfo, k_list, cause):
+    """Start new arcs for every satellite at each epoch index in k_list (e.g. product-day boundaries,
+    TDS § 11.2: ambiguities are reset at product-day boundaries unless continuity is verified)."""
+    n = 0
+    for kb in k_list:
+        for j in range(arcinfo.arc.shape[1]):
+            a = int(arcinfo.arc[kb, j]) if kb < arcinfo.arc.shape[0] else -1
+            if a < 0:
+                # first epoch at/after kb in the arc that spans the boundary
+                col = arcinfo.arc[kb:, j]
+                nxt = np.nonzero(col >= 0)[0]
+                if not len(nxt):
+                    continue
+                a = int(col[nxt[0]])
+                kk = kb + int(nxt[0])
+            else:
+                kk = kb
+            meta = arcinfo.arc_meta.get(a)
+            if meta is not None and meta["first"] < kb <= meta["last"]:
+                split_arc(arcinfo, j, kk, cause)
+                n += 1
+    return n
